@@ -4,6 +4,63 @@ import yfinance as yf
 import plotly.graph_objects as go
 import subprocess
 
+def get_series(df, column):
+    data = df[column]
+    if isinstance(data, pd.DataFrame):
+        return data.iloc[:, 0]
+    return data
+
+def get_market_signal(symbol, name):
+    market_df = yf.download(
+        symbol,
+        period="3mo",
+        interval="1d",
+        progress=False,
+        auto_adjust=False
+    )
+
+    if market_df.empty:
+        return {
+            "名稱": name,
+            "代號": symbol,
+            "訊號": "無資料",
+            "原因": "抓不到資料"
+        }
+
+    close_series = get_series(market_df, "Close")
+
+    ma5 = close_series.rolling(5).mean()
+    ma60 = close_series.rolling(60).mean()
+
+    latest_close = float(close_series.iloc[-1])
+    latest_ma5 = float(ma5.iloc[-1])
+    latest_ma60 = float(ma60.iloc[-1])
+
+    prev_close = float(close_series.iloc[-2])
+    prev_ma5 = float(ma5.iloc[-2])
+    prev_ma60 = float(ma60.iloc[-2])
+
+    signal = "無訊號"
+    reason = "目前未出現明確突破或跌破"
+
+    if latest_close > latest_ma60 and prev_ma5 <= prev_ma60 and latest_ma5 > latest_ma60:
+        signal = "🟢 買進訊號"
+        reason = "收盤價站上60MA，且5MA上穿60MA"
+
+    elif latest_close < latest_ma60 and prev_ma5 >= prev_ma60 and latest_ma5 < latest_ma60:
+        signal = "🔴 賣出訊號"
+        reason = "收盤價跌破60MA，且5MA下穿60MA"
+
+    return {
+        "名稱": name,
+        "代號": symbol,
+        "收盤價": round(latest_close, 2),
+        "5MA": round(latest_ma5, 2),
+        "60MA": round(latest_ma60, 2),
+        "訊號": signal,
+        "原因": reason
+    }
+
 st.set_page_config(
     page_title="DeepTrend",
     page_icon="🔥",
@@ -12,6 +69,33 @@ st.set_page_config(
 
 st.title("🔥 DeepTrend")
 st.caption("AI Quant Trading Radar")
+
+with st.container(border=True):
+    st.markdown("## 📡 市場方向觀察")
+    st.caption("大盤訊號僅供參考，不納入個股評分")
+
+    market_1 = get_market_signal("^TWII", "加權指數")
+    market_2 = get_market_signal("0050.TW", "0050 ETF")
+
+    col_m1, col_m2 = st.columns(2)
+
+    with col_m1:
+        st.subheader(market_1["名稱"])
+        st.metric(
+            "收盤價",
+            f"{market_1.get('收盤價', 0):,.2f}"
+        )
+        st.write(f"訊號：{market_1['訊號']}")
+        st.caption(market_1["原因"])
+
+    with col_m2:
+        st.subheader(market_2["名稱"])
+        st.metric(
+            "收盤價",
+            f"{market_2.get('收盤價', 0):,.2f}"
+        )
+        st.write(f"訊號：{market_2['訊號']}")
+        st.caption(market_2["原因"])
 
 if st.button("🔄 更新市場資料"):
     with st.spinner("正在更新資料，請稍等..."):
@@ -73,6 +157,41 @@ styled_df = filtered_df.style.map(
     subset=["狀態"]
 )
 
+display_df = filtered_df.copy()
+
+price_columns = [
+    "收盤價",
+    "5日線",
+    "10日線",
+    "20日線",
+    "20日高點",
+    "20日低點"
+]
+
+chip_columns = [
+    "籌碼1日",
+    "籌碼3日",
+    "籌碼5日",
+    "籌碼10日"
+]
+
+for col in chip_columns:
+    if col in display_df.columns:
+        display_df[col] = display_df[col].map(
+            lambda x: "" if pd.isna(x) or x == "" else f"{int(x):,}"
+        )
+
+for col in price_columns:
+    display_df[col] = display_df[col].map(lambda x: f"{x:,.2f}")
+
+display_df["成交量"] = display_df["成交量"].map(lambda x: f"{int(x):,}")
+display_df["5日均量"] = display_df["5日均量"].map(lambda x: f"{int(x):,}")
+
+styled_df = display_df.style.map(
+    color_status,
+    subset=["狀態"]
+)
+
 st.dataframe(
     styled_df,
     use_container_width=True,
@@ -126,11 +245,7 @@ k_df = yf.download(
 # =========================
 # 均線
 # =========================
-def get_series(df, column):
-    data = df[column]
-    if isinstance(data, pd.DataFrame):
-        return data.iloc[:, 0]
-    return data
+
 
 open_series = get_series(k_df, "Open")
 high_series = get_series(k_df, "High")
