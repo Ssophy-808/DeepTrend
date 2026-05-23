@@ -37,6 +37,8 @@ def get_market_signal(symbol, name):
     latest_ma60 = float(ma60.iloc[-1])
 
     prev_close = float(close_series.iloc[-2])
+    change = latest_close - prev_close
+    change_pct = (change / prev_close) * 100
     prev_ma5 = float(ma5.iloc[-2])
     prev_ma60 = float(ma60.iloc[-2])
 
@@ -55,6 +57,8 @@ def get_market_signal(symbol, name):
         "名稱": name,
         "代號": symbol,
         "收盤價": round(latest_close, 2),
+        "漲跌": round(change, 2),
+        "漲跌幅": round(change_pct, 2),
         "5MA": round(latest_ma5, 2),
         "60MA": round(latest_ma60, 2),
         "訊號": signal,
@@ -81,21 +85,121 @@ with st.container(border=True):
 
     with col_m1:
         st.subheader(market_1["名稱"])
-        st.metric(
-            "收盤價",
-            f"{market_1.get('收盤價', 0):,.2f}"
-        )
-        st.write(f"訊號：{market_1['訊號']}")
-        st.caption(market_1["原因"])
+        change_color_1 = "#ff4b4b" if market_1["漲跌"] > 0 else "#00c853"
+        arrow_1 = "▲" if market_1["漲跌"] > 0 else "▼"
+
+        st.markdown(f"""
+        <div style="
+            padding:25px;
+            border:1px solid #333;
+            border-radius:20px;
+            background-color:#0e1117;
+        ">
+            <h2>{market_1["名稱"]}</h2>
+
+        <div style="
+             font-size:18px;
+            color:#aaaaaa;
+            margin-top:20px;
+        ">
+            收盤價
+        </div>
+
+        <div style="
+            font-size:64px;
+            font-weight:bold;
+            color:white;
+            margin-top:10px;
+        ">
+            {market_1["收盤價"]:,.2f}
+        </div>
+
+        <div style="
+            font-size:32px;
+            font-weight:bold;
+            color:{change_color_1};
+            margin-top:10px;
+        ">
+            {arrow_1}
+            {abs(market_1["漲跌"]):,.2f}
+            ({market_1["漲跌幅"]:+.2f}%)
+         </div>
+
+        <div style="
+             margin-top:20px;
+            color:#cccccc;
+        ">
+             訊號：{market_1["訊號"]}
+        </div>
+
+        <div style="
+            color:#888888;
+            margin-top:8px;
+        ">
+            {market_1["原因"]}
+        </div>
+
+        </div>
+        """, unsafe_allow_html=True)
 
     with col_m2:
         st.subheader(market_2["名稱"])
-        st.metric(
-            "收盤價",
-            f"{market_2.get('收盤價', 0):,.2f}"
-        )
-        st.write(f"訊號：{market_2['訊號']}")
-        st.caption(market_2["原因"])
+        change_color_2 = "#ff4b4b" if market_2["漲跌"] > 0 else "#00c853"
+        arrow_2 = "▲" if market_2["漲跌"] > 0 else "▼"
+
+        st.markdown(f"""
+        <div style="
+            padding:25px;
+            border:1px solid #333;
+            border-radius:20px;
+            background-color:#0e1117;
+        ">
+            <h2>{market_2["名稱"]}</h2>
+
+        <div style="
+             font-size:18px;
+            color:#aaaaaa;
+            margin-top:20px;
+        ">
+            收盤價
+        </div>
+
+        <div style="
+            font-size:64px;
+            font-weight:bold;
+            color:white;
+            margin-top:10px;
+        ">
+            {market_2["收盤價"]:,.2f}
+        </div>
+
+        <div style="
+            font-size:32px;
+            font-weight:bold;
+            color:{change_color_1};
+            margin-top:10px;
+        ">
+            {arrow_2}
+            {abs(market_2["漲跌"]):,.2f}
+            ({market_2["漲跌幅"]:+.2f}%)
+         </div>
+
+        <div style="
+             margin-top:20px;
+            color:#cccccc;
+        ">
+             訊號：{market_2["訊號"]}
+        </div>
+
+        <div style="
+            color:#888888;
+            margin-top:8px;
+        ">
+            {market_2["原因"]}
+        </div>
+
+        </div>
+        """, unsafe_allow_html=True)
 
 if st.button("🔄 更新市場資料"):
     with st.spinner("正在更新資料，請稍等..."):
@@ -122,6 +226,16 @@ keyword = st.sidebar.text_input("搜尋股票名稱或代號")
 
 filtered_df = df.copy()
 
+filtered_df["漲幅%"] = (
+    (filtered_df["收盤價"] - filtered_df["5日線"])
+    / filtered_df["5日線"]
+) * 100
+
+top_strength = filtered_df.sort_values(
+    by="漲幅%",
+    ascending=False
+).head(5)
+
 if selected_status != "全部":
     filtered_df = filtered_df[filtered_df["狀態"] == selected_status]
 
@@ -133,8 +247,35 @@ if keyword:
         filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-st.subheader("📊 股票掃描結果")
-st.write(f"目前顯示 {len(filtered_df)} 檔股票")
+tab_scan, tab_rank, tab_detail = st.tabs([
+    "📊 股票掃描",
+    "🚀 強勢排行榜",
+    "🔎 個股查詢"
+])
+
+with tab_rank:
+    st.subheader("🚀 強勢股排行榜")
+
+    for i, (_, row) in enumerate(top_strength.iterrows(), 1):
+
+        color = "#ff4b4b" if row["漲幅%"] > 0 else "#00c853"
+
+        st.markdown(f"""
+        <div style="padding:12px;margin-bottom:10px;border-radius:12px;background-color:#111111;border:1px solid #333;">
+
+        <span style="font-size:20px;font-weight:bold;color:white;">
+        {i}️⃣ {row["股票名稱"]}
+        </span>
+
+        <span style="float:right;font-size:22px;font-weight:bold;color:{color};">
+        {row["漲幅%"]:+.2f}%
+        </span>
+
+        </div>
+        """, unsafe_allow_html=True)
+with tab_scan:
+    st.subheader("📊 股票掃描結果")
+    st.write(f"目前顯示 {len(filtered_df)} 檔股票")
 
 def color_status(val):
 
@@ -202,29 +343,31 @@ st.dataframe(
 # 股票選擇
 # =========================
 
-selected_stock = st.selectbox(
-    "選擇股票查看K線",
-    filtered_df["股票代號"]
-)
+with tab_detail:
 
-selected_row = filtered_df[filtered_df["股票代號"] == selected_stock].iloc[0]
+    selected_stock = st.selectbox(
+        "選擇股票查看K線",
+        filtered_df["股票代號"]
+    )
 
-
-st.markdown("## 🔎 個股分析摘要")
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-col1.metric("股票名稱", selected_row["股票名稱"])
-col2.metric("技術分數", selected_row["技術分數"])
-col3.metric("狀態", selected_row["狀態"])
-col4.metric("綜合判斷", selected_row["綜合判斷"])
+    selected_row = filtered_df[filtered_df["股票代號"] == selected_stock].iloc[0]
 
 
-st.markdown("### 📌 技術面")
-st.info(selected_row["技術面"])
+    st.markdown("## 🔎 個股分析摘要")
 
-st.markdown("### 💰 籌碼面")
-st.success(selected_row["籌碼面"])
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric("股票名稱", selected_row["股票名稱"])
+    col2.metric("技術分數", selected_row["技術分數"])
+    col3.metric("狀態", selected_row["狀態"])
+    col4.metric("綜合判斷", selected_row["綜合判斷"])
+
+
+    st.markdown("### 📌 技術面")
+    st.info(selected_row["技術面"])
+
+    st.markdown("### 💰 籌碼面")
+    st.success(selected_row["籌碼面"])
 
 
 
@@ -232,13 +375,13 @@ st.success(selected_row["籌碼面"])
 # 抓K線資料
 # =========================
 
-k_df = yf.download(
-    selected_stock,
-    period="3mo",
-    interval="1d",
-    progress=False,
-    auto_adjust=False
-)
+    k_df = yf.download(
+        selected_stock,
+        period="3mo",
+        interval="1d",
+        progress=False,
+        auto_adjust=False
+    )
 
 
 
@@ -247,135 +390,135 @@ k_df = yf.download(
 # =========================
 
 
-open_series = get_series(k_df, "Open")
-high_series = get_series(k_df, "High")
-low_series = get_series(k_df, "Low")
-close_series = get_series(k_df, "Close")
-volume_series = get_series(k_df, "Volume")
+    open_series = get_series(k_df, "Open")
+    high_series = get_series(k_df, "High")
+    low_series = get_series(k_df, "Low")
+    close_series = get_series(k_df, "Close")
+    volume_series = get_series(k_df, "Volume")
 
-k_df["MA5"] = close_series.rolling(5).mean()
-k_df["MA10"] = close_series.rolling(10).mean()
-k_df["MA20"] = close_series.rolling(20).mean()
+    k_df["MA5"] = close_series.rolling(5).mean()
+    k_df["MA10"] = close_series.rolling(10).mean()
+    k_df["MA20"] = close_series.rolling(20).mean()
 
-delta = close_series.diff()
+    delta = close_series.diff()
 
-gain = delta.clip(lower=0)
-loss = -delta.clip(upper=0)
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-avg_gain = gain.rolling(14).mean()
-avg_loss = loss.rolling(14).mean()
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
 
-rs = avg_gain / avg_loss
+    rs = avg_gain / avg_loss
 
-k_df["RSI"] = 100 - (100 / (1 + rs))
+    k_df["RSI"] = 100 - (100 / (1 + rs))
 
 
-   
+    
 
-k_df = k_df[k_df["MA20"].notna()]
-k_df = k_df[k_df["RSI"].notna()]
+    k_df = k_df[k_df["MA20"].notna()]
+    k_df = k_df[k_df["RSI"].notna()]
 
-open_series = get_series(k_df, "Open")
-high_series = get_series(k_df, "High")
-low_series = get_series(k_df, "Low")
-close_series = get_series(k_df, "Close")
-volume_series = get_series(k_df, "Volume")
+    open_series = get_series(k_df, "Open")
+    high_series = get_series(k_df, "High")
+    low_series = get_series(k_df, "Low")
+    close_series = get_series(k_df, "Close")
+    volume_series = get_series(k_df, "Volume")
 
 # =========================
 # 畫K線圖
 # =========================
 
-from plotly.subplots import make_subplots
+    from plotly.subplots import make_subplots
 
-fig = make_subplots(
-    rows=3,
-    cols=1,
-    shared_xaxes=True,
-    vertical_spacing=0.03,
-    row_heights=[0.6, 0.2, 0.2]
-)
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.6, 0.2, 0.2]
+    )
 
-fig.add_trace(
-    go.Candlestick(
-        x=k_df.index,
-        open=open_series,
-        high=high_series,
-        low=low_series,
-        close=close_series,
-        name="K線",
+    fig.add_trace(
+        go.Candlestick(
+            x=k_df.index,
+            open=open_series,
+            high=high_series,
+            low=low_series,
+            close=close_series,
+            name="K線",
 
-        increasing_line_color="#ef4444",
-        increasing_fillcolor="#ef4444",
+            increasing_line_color="#ef4444",
+            increasing_fillcolor="#ef4444",
 
-        decreasing_line_color="#22c55e",
-        decreasing_fillcolor="#22c55e"
-    ),
-    row=1,
-    col=1
-)
+            decreasing_line_color="#22c55e",
+            decreasing_fillcolor="#22c55e"
+        ),
+        row=1,
+        col=1
+    )
 
 # K線
-volume_colors = [
-    "#ef4444" if close_series.iloc[i] >= open_series.iloc[i]
-    else "#22c55e"
-    for i in range(len(k_df))
-]
+    volume_colors = [
+        "#ef4444" if close_series.iloc[i] >= open_series.iloc[i]
+        else "#22c55e"
+        for i in range(len(k_df))
+    ]
 
 
 
 # MA5
-fig.add_trace(
-    go.Scatter(
-        x=k_df.index,
-        y=k_df["MA5"],
-        mode="lines",
-        name="MA5"
-    ),
-    row=1,
-    col=1
-)
+    fig.add_trace(
+        go.Scatter(
+            x=k_df.index,
+            y=k_df["MA5"],
+            mode="lines",
+            name="MA5"
+        ),
+        row=1,
+        col=1
+    )
 
-fig.add_trace(
-    go.Scatter(
-        x=k_df.index,
-        y=k_df["MA10"],
-        mode="lines",
-        name="MA10"
-    ),
-    row=1,
-    col=1
-)
+    fig.add_trace(
+        go.Scatter(
+            x=k_df.index,
+            y=k_df["MA10"],
+            mode="lines",
+            name="MA10"
+        ),
+        row=1,
+        col=1
+    )
 
 # MA20
-fig.add_trace(
-    go.Scatter(
-        x=k_df.index,
-        y=k_df["MA20"],
-        mode="lines",
-        name="MA20"
-    ),
-    row=1,
-    col=1
-)
+    fig.add_trace(
+        go.Scatter(
+            x=k_df.index,
+            y=k_df["MA20"],
+            mode="lines",
+            name="MA20"
+        ),
+        row=1,
+        col=1
+    )
 
 
 
-# RSI 超買超賣線
-fig.add_hline(
-    y=70,
-    line_dash="dash",
-    line_color="red",
-    row=3,
-    col=1
-)
+    # RSI 超買超賣線
+    fig.add_hline(
+        y=70,
+        line_dash="dash",
+        line_color="red",
+        row=3,
+        col=1
+    )
 
-fig.add_hline(
-    y=30,
-    line_dash="dash",
-    line_color="green",
-    row=3,
-    col=1
-)
+    fig.add_hline(
+        y=30,
+        line_dash="dash",
+        line_color="green",
+        row=3,
+        col=1
+    )
 
 # =========================
 # 成交量
@@ -383,64 +526,64 @@ fig.add_hline(
 
 
 
-fig.add_trace(
-    go.Bar(
-        x=k_df.index,
-        y=volume_series,
-        name="成交量（紅漲綠跌）",
-        marker_color=volume_colors
-    ),
-    row=2,
-    col=1
-)
+    fig.add_trace(
+        go.Bar(
+            x=k_df.index,
+            y=volume_series,
+            name="成交量（紅漲綠跌）",
+            marker_color=volume_colors
+        ),
+        row=2,
+        col=1
+    )
 
 # =========================
 # RSI
 # =========================
 
-fig.add_trace(
-    go.Scatter(
-        x=k_df.index,
-        y=k_df["RSI"],
-        mode="lines",
-        name="RSI",
-        line=dict(color="#facc15")
-    ),
-    row=3,
-    col=1
-)
-
-fig.add_hline(
-    y=70,
-    line_dash="dash",
-    line_color="red",
-    row=3,
-    col=1
-)
-
-fig.add_hline(
-    y=30,
-    line_dash="dash",
-    line_color="green",
-    row=3,
-    col=1
-)
-
-fig.update_layout(
-    height=700,
-    xaxis_rangeslider_visible=False,
-
-    showlegend=True,
-
-    xaxis=dict(
-        rangebreaks=[
-            dict(bounds=["sat", "mon"])
-        ]
+    fig.add_trace(
+        go.Scatter(
+            x=k_df.index,
+            y=k_df["RSI"],
+            mode="lines",
+            name="RSI",
+            line=dict(color="#facc15")
+        ),
+        row=3,
+        col=1
     )
-)
 
-st.caption("🔴 紅量 = 收漲　🟢 綠量 = 收跌")
-st.plotly_chart(
+    fig.add_hline(
+        y=70,
+        line_dash="dash",
+        line_color="red",
+        row=3,
+        col=1
+    )
+
+    fig.add_hline(
+        y=30,
+        line_dash="dash",
+        line_color="green",
+        row=3,
+        col=1
+    )
+
+    fig.update_layout(
+        height=700,
+        xaxis_rangeslider_visible=False,
+
+        showlegend=True,
+
+        xaxis=dict(
+            rangebreaks=[
+                dict(bounds=["sat", "mon"])
+            ]
+        )
+    )
+
+    st.caption("🔴 紅量 = 收漲　🟢 綠量 = 收跌")
+    st.plotly_chart(
     fig,
     use_container_width=True
 )
