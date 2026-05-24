@@ -1,0 +1,100 @@
+import subprocess
+from textwrap import dedent
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+from plotly.subplots import make_subplots
+
+
+RESULT_FILE = "output/stock_analysis_result.xlsx"
+
+
+def get_series(df, column):
+    data = df[column]
+    if isinstance(data, pd.DataFrame):
+        return data.iloc[:, 0]
+    return data
+
+
+def normalize_tw_symbol(symbol):
+    symbol = str(symbol).strip()
+
+    if not symbol:
+        return symbol
+
+    if symbol.startswith("^") or "." in symbol or symbol.endswith("=F"):
+        return symbol
+
+    if symbol.isdigit():
+        return f"{symbol}.TW"
+
+    return symbol
+
+
+@st.cache_data(ttl=600)
+def download_market_data(symbol, period="3mo", interval="1d"):
+    return yf.download(
+        symbol,
+        period=period,
+        interval=interval,
+        progress=False,
+        auto_adjust=False,
+    )
+
+
+def empty_market_signal(symbol, name, reason="抓不到資料"):
+    return {
+        "名稱": name,
+        "代號": symbol,
+        "收盤價": 0,
+        "漲跌": 0,
+        "漲跌幅": 0,
+        "5MA": 0,
+        "60MA": 0,
+        "訊號": "無資料",
+        "原因": reason,
+    }
+
+
+def get_market_signal(symbol, name):
+    market_df = download_market_data(symbol)
+
+    if market_df.empty or "Close" not in market_df.columns:
+        return empty_market_signal(symbol, name)
+
+    close_series = get_series(market_df, "Close").dropna()
+
+    if len(close_series) < 60:
+        return empty_market_signal(symbol, name, "資料不足，無法計算60MA")
+
+    ma5 = close_series.rolling(5).mean()
+    ma60 = close_series.rolling(60).mean()
+
+    latest_close = float(close_series.iloc[-1])
+    prev_close = float(close_series.iloc[-2])
+    latest_ma5 = float(ma5.iloc[-1])
+    latest_ma60 = float(ma60.iloc[-1])
+    prev_ma5 = float(ma5.iloc[-2])
+    prev_ma60 = float(ma60.iloc[-2])
+
+    change = latest_close - prev_close
+    change_pct = (change / prev_close) * 100 if prev_close else 0
+
+    signal = "無訊號"
+    reason = "目前未出現明確突破或跌破"
+
+    if latest_close > latest_ma60 and prev_ma5 <= prev_ma60 and latest_ma5 > latest_ma60:
+        signal = "🟢 買進訊號"
+        reason = "收盤價站上60MA，且5MA上穿60MA"
+    elif latest_close < latest_ma60 and prev_ma5 >= prev_ma60 and latest_ma5 < latest_ma60:
+        signal = "🔴 賣出訊號"
+        reason = "收盤價跌破60MA，且5MA下穿60MA"
+
+    return {
+        "名稱": name,
+        "代號": symbol,
+        "收盤價": round(latest_close, 2),
+        "漲跌": round(change, 2),
+        "漲跌幅": round(change_pct, 2),
