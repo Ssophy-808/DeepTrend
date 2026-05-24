@@ -23,6 +23,9 @@ def get_market_signal(symbol, name):
         return {
             "名稱": name,
             "代號": symbol,
+            "收盤價": 0,
+            "漲跌": 0,
+            "漲跌幅": 0,
             "訊號": "無資料",
             "原因": "抓不到資料"
         }
@@ -80,8 +83,9 @@ with st.container(border=True):
 
     market_1 = get_market_signal("^TWII", "加權指數")
     market_2 = get_market_signal("0050.TW", "0050 ETF")
+    market_3 = get_market_signal("WTX&", "台指近月")
 
-    col_m1, col_m2 = st.columns(2)
+    col_m1, col_m2, col_m3 = st.columns(3)
 
     with col_m1:
         st.subheader(market_1["名稱"])
@@ -196,6 +200,65 @@ with st.container(border=True):
             margin-top:8px;
         ">
             {market_2["原因"]}
+        </div>
+
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_m3:
+        st.subheader(market_3["名稱"])
+        change_color_2 = "#ff4b4b" if market_2["漲跌"] > 0 else "#00c853"
+        arrow_2 = "▲" if market_2["漲跌"] > 0 else "▼"
+
+        st.markdown(f"""
+        <div style="
+            padding:25px;
+            border:1px solid #333;
+            border-radius:20px;
+            background-color:#0e1117;
+        ">
+            <h2>{market_3["名稱"]}</h2>
+
+        <div style="
+             font-size:18px;
+            color:#aaaaaa;
+            margin-top:20px;
+        ">
+            收盤價
+        </div>
+
+        <div style="
+            font-size:64px;
+            font-weight:bold;
+            color:white;
+            margin-top:10px;
+        ">
+            {market_3["收盤價"]:,.2f}
+        </div>
+
+        <div style="
+            font-size:32px;
+            font-weight:bold;
+            color:{change_color_1};
+            margin-top:10px;
+        ">
+            {arrow_2}
+            {abs(market_3["漲跌"]):,.2f}
+            ({market_3["漲跌幅"]:+.2f}%)
+         </div>
+
+        <div style="
+             margin-top:20px;
+            color:#cccccc;
+        ">
+             訊號：{market_3["訊號"]}
+        </div>
+
+        <div style="
+            color:#888888;
+            margin-top:8px;
+        ">
+            {market_3["原因"]}
         </div>
 
         </div>
