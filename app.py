@@ -226,10 +226,28 @@ keyword = st.sidebar.text_input("搜尋股票名稱或代號")
 
 filtered_df = df.copy()
 
+filtered_df["收盤價"] = pd.to_numeric(filtered_df["收盤價"], errors="coerce")
+filtered_df["5日線"] = pd.to_numeric(filtered_df["5日線"], errors="coerce")
+
+filtered_df["收盤價"] = pd.to_numeric(
+    filtered_df["收盤價"],
+    errors="coerce"
+)
+
+filtered_df["5日線"] = pd.to_numeric(
+    filtered_df["5日線"],
+    errors="coerce"
+)
+
 filtered_df["漲幅%"] = (
-    (filtered_df["收盤價"] - filtered_df["5日線"])
+    (
+        filtered_df["收盤價"]
+        - filtered_df["5日線"]
+    )
     / filtered_df["5日線"]
-) * 100
+    * 100
+).round(2)
+
 
 top_strength = filtered_df.sort_values(
     by="漲幅%",
@@ -306,7 +324,8 @@ price_columns = [
     "10日線",
     "20日線",
     "20日高點",
-    "20日低點"
+    "20日低點",
+    "漲幅%"
 ]
 
 chip_columns = [

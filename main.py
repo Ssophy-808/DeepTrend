@@ -18,6 +18,21 @@ def get_series(df, column):
         return data.iloc[:, 0]
     return data
 
+def generate_ai_comment(judgement, reasons, score):
+    reason_text = "、".join(reasons)
+
+    if judgement == "強勢觀察":
+        return f"短線偏強，{reason_text}，可以列入觀察，但仍要注意是否追高。"
+
+    elif judgement == "可追蹤":
+        return f"目前有部分轉強訊號，{reason_text}，可追蹤但不急著進場。"
+
+    elif judgement == "觀望":
+        return f"訊號普通，{reason_text}，目前方向不明，適合先觀察。"
+
+    else:
+        return f"目前偏弱，{reason_text}，短線不建議急著進場。"
+
 
 for index, row in watchlist.iterrows():
     ticker = row["ticker"]
@@ -279,6 +294,11 @@ for index, row in watchlist.iterrows():
         "綜合判斷": judgement,
         "技術面": "、".join(technical_reasons),
         "籌碼面": "、".join(chip_reasons),
+        "AI評語": generate_ai_comment(
+            judgement,
+            technical_reasons,
+            score,
+        ),
     })
 
 
