@@ -998,6 +998,7 @@ with st.container(border=True):
         st.caption("資料")
         if st.button("🔄 更新市場資料", use_container_width=True):
             with st.spinner("正在更新資料，請稍等..."):
+                subprocess.run(["python", str(BASE_DIR / "update_chip.py")], check=False)
                 subprocess.run(["python", str(BASE_DIR / "main.py")], check=False)
             st.cache_data.clear()
             st.success("更新完成！")

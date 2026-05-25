@@ -27,6 +27,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Update chip data
+        run: python update_chip.py
+
       - name: Generate latest stock analysis
         run: python main.py
 
@@ -34,4 +37,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "update stock analysis data"
-          file_pattern: output/stock_analysis_result.xlsx
+          file_pattern: chip.csv output/stock_analysis_result.xlsx
