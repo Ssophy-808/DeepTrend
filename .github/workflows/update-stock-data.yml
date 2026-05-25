@@ -1,0 +1,37 @@
+name: Update stock data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 07:30 UTC = 15:30 Asia/Taipei, Monday to Friday.
+    - cron: "30 7 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  update-stock-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate latest stock analysis
+        run: python main.py
+
+      - name: Commit updated data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "update stock analysis data"
+          file_pattern: output/stock_analysis_result.xlsx
