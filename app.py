@@ -312,6 +312,33 @@ def get_official_daily_history(ticker):
     return history.tail(60).reset_index(drop=True)
 
 
+def official_history_to_kline(history):
+    if history.empty:
+        return pd.DataFrame()
+
+    k_df = history.copy()
+    k_df = k_df.rename(
+        columns={
+            "日期": "Date",
+            "收盤價": "Close",
+            "最高價": "High",
+            "最低價": "Low",
+            "成交量": "Volume",
+        }
+    )
+    k_df["Date"] = pd.to_datetime(k_df["Date"])
+    k_df = k_df.set_index("Date").sort_index()
+
+    for col in ["Close", "High", "Low", "Volume"]:
+        k_df[col] = pd.to_numeric(k_df[col], errors="coerce")
+
+    k_df["Open"] = k_df["Close"].shift(1)
+    k_df["Open"] = k_df["Open"].fillna(k_df["Close"])
+    k_df = k_df.dropna(subset=["Open", "High", "Low", "Close"])
+
+    return k_df[["Open", "High", "Low", "Close", "Volume"]]
+
+
 @st.cache_data(ttl=10)
 def get_twse_realtime_map(tickers):
     channels = []
@@ -730,7 +757,11 @@ def render_detail(filtered_df):
     st.success(selected_row["籌碼面"])
 
     symbol = normalize_tw_symbol(selected_stock)
-    k_df = download_market_data(symbol)
+    history = get_official_daily_history(symbol)
+    k_df = official_history_to_kline(history)
+
+    if k_df.empty:
+        k_df = download_market_data(symbol)
 
     if k_df.empty:
         st.warning(f"抓不到 {symbol} 的K線資料。")
