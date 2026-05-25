@@ -720,7 +720,15 @@ def render_stock_radar(filtered_df):
         st.info("目前沒有符合篩選條件的股票。")
         return
 
-    card_df = filtered_df.sort_values(["技術分數", "乖離率"], ascending=[False, False])
+    sort_options = {
+        "技術分數高到低": (["技術分數", "乖離率"], [False, False]),
+        "今日漲跌幅高到低": (["今日漲跌幅", "技術分數"], [False, False]),
+        "乖離率高到低": (["乖離率", "技術分數"], [False, False]),
+        "收盤價高到低": (["收盤價", "技術分數"], [False, False]),
+    }
+    selected_sort = st.selectbox("排序方式", list(sort_options.keys()), key="radar_sort")
+    sort_columns, sort_ascending = sort_options[selected_sort]
+    card_df = filtered_df.sort_values(sort_columns, ascending=sort_ascending, na_position="last")
     columns = st.columns(3)
 
     for index, (_, row) in enumerate(card_df.iterrows()):
