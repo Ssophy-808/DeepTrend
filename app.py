@@ -855,28 +855,37 @@ with st.container(border=True):
         with col:
             render_market_card(market)
 
-if st.button("🔄 更新市場資料"):
-    with st.spinner("正在更新資料，請稍等..."):
-        subprocess.run(["python", str(BASE_DIR / "main.py")], check=False)
-    st.cache_data.clear()
-    st.success("更新完成！")
-    st.rerun()
-
 df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
 
-st.sidebar.header("篩選條件")
-
 status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
-selected_status = st.sidebar.selectbox("狀態", status_options)
+min_score_value = int(df["技術分數"].min())
+max_score_value = int(df["技術分數"].max())
 
-min_score = st.sidebar.slider(
-    "最低技術分數",
-    min_value=int(df["技術分數"].min()),
-    max_value=int(df["技術分數"].max()),
-    value=int(df["技術分數"].min()),
-)
+with st.container(border=True):
+    update_col, status_col, score_col, search_col = st.columns([1.1, 1.2, 1.6, 2.1])
 
-keyword = st.sidebar.text_input("搜尋股票名稱或代號")
+    with update_col:
+        st.caption("資料")
+        if st.button("🔄 更新市場資料", use_container_width=True):
+            with st.spinner("正在更新資料，請稍等..."):
+                subprocess.run(["python", str(BASE_DIR / "main.py")], check=False)
+            st.cache_data.clear()
+            st.success("更新完成！")
+            st.rerun()
+
+    with status_col:
+        selected_status = st.selectbox("狀態", status_options)
+
+    with score_col:
+        min_score = st.slider(
+            "最低技術分數",
+            min_value=min_score_value,
+            max_value=max_score_value,
+            value=min_score_value,
+        )
+
+    with search_col:
+        keyword = st.text_input("搜尋股票名稱或代號")
 
 filtered_df = df.copy()
 top_strength = filtered_df.sort_values(by="乖離率", ascending=False).head(5)
