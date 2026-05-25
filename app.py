@@ -372,8 +372,10 @@ def get_twse_realtime_map(tickers):
                     latest_price = to_float(item.get("o")) or to_float(item.get("y"))
 
             if latest_price:
+                previous_close = to_float(item.get("y"))
                 realtime[ticker] = {
                     "price": latest_price,
+                    "previous_close": previous_close,
                     "high": to_float(item.get("h")),
                     "low": to_float(item.get("l")),
                     "volume": to_float(item.get("v")) * 1000,
@@ -550,7 +552,10 @@ def prepare_stock_data(df):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["漲幅%"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
+    if "今日漲跌幅" not in df.columns:
+        df["今日漲跌幅"] = pd.NA
+
+    df["乖離率"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
     return df
 
 
@@ -584,6 +589,7 @@ def apply_realtime_prices(df):
         history = histories.get(ticker, pd.DataFrame(columns=["日期", "收盤價", "最高價", "最低價", "成交量"]))
         today = date.today()
         new_close = float(data["price"])
+        previous_close = data.get("previous_close") or 0
 
         if not history.empty:
             today_row = {
@@ -624,10 +630,13 @@ def apply_realtime_prices(df):
         if "成交量" in updated_df.columns and data.get("volume"):
             updated_df.loc[mask, "成交量"] = data["volume"]
 
+        if previous_close:
+            updated_df.loc[mask, "今日漲跌幅"] = round((new_close - previous_close) / previous_close * 100, 2)
+
         updated_df.loc[mask, "資料時間"] = data.get("time", "")
 
     if "5日線" in updated_df.columns:
-        updated_df["漲幅%"] = (
+        updated_df["乖離率"] = (
             (updated_df["收盤價"] - updated_df["5日線"]) / updated_df["5日線"] * 100
         ).round(2)
 
@@ -642,12 +651,12 @@ def render_rank(top_strength):
         return
 
     for i, (_, row) in enumerate(top_strength.iterrows(), 1):
-        color = "#ff4b4b" if row["漲幅%"] > 0 else "#00c853" if row["漲幅%"] < 0 else "#aaaaaa"
+        color = "#ff4b4b" if row["乖離率"] > 0 else "#00c853" if row["乖離率"] < 0 else "#aaaaaa"
         html = dedent(
             f"""
             <div style="padding:12px;margin-bottom:10px;border-radius:12px;background-color:#111111;border:1px solid #333;">
                 <span style="font-size:20px;font-weight:bold;color:white;">{i}. {row["股票名稱"]}</span>
-                <span style="float:right;font-size:22px;font-weight:bold;color:{color};">{row["漲幅%"]:+.2f}%</span>
+                <span style="float:right;font-size:22px;font-weight:bold;color:{color};">{row["乖離率"]:+.2f}%</span>
             </div>
             """
         ).replace("\n", "")
@@ -674,12 +683,12 @@ def render_scan_table(filtered_df):
         latest_time_text = latest_times[-1] if latest_times else "尚未取得"
         st.caption(f"即時資料更新：{updated_count}/{len(display_df)} 檔，最新時間 {latest_time_text}")
 
-    front_columns = ["股票代號", "股票名稱", "資料時間"]
+    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅"]
     ordered_columns = [col for col in front_columns if col in display_df.columns]
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
 
-    price_columns = ["收盤價", "5日線", "10日線", "20日線", "20日高點", "20日低點", "漲幅%"]
+    price_columns = ["收盤價", "今日漲跌幅", "5日線", "10日線", "20日線", "20日高點", "20日低點", "乖離率"]
     chip_columns = ["籌碼1日", "籌碼3日", "籌碼5日", "籌碼10日"]
 
     for col in chip_columns:
@@ -870,7 +879,7 @@ min_score = st.sidebar.slider(
 keyword = st.sidebar.text_input("搜尋股票名稱或代號")
 
 filtered_df = df.copy()
-top_strength = filtered_df.sort_values(by="漲幅%", ascending=False).head(5)
+top_strength = filtered_df.sort_values(by="乖離率", ascending=False).head(5)
 
 if selected_status != "全部":
     filtered_df = filtered_df[filtered_df["狀態"] == selected_status]
