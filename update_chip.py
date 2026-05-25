@@ -52,10 +52,13 @@ def fetch_twse_chip(day):
     code_index = fields.index("證券代號")
     total_index = fields.index("三大法人買賣超股數")
 
-    return {
-        normalize_chip_ticker(row[code_index]): to_int(row[total_index])
-        for row in payload.get("data", [])
-    }
+    results = {}
+    for row in payload.get("data", []):
+        if len(row) <= max(code_index, total_index):
+            continue
+        results[normalize_chip_ticker(row[code_index])] = to_int(row[total_index])
+
+    return results
 
 
 def fetch_tpex_chip(day):
@@ -75,10 +78,13 @@ def fetch_tpex_chip(day):
     if not tables or payload.get("stat") == "很抱歉，沒有符合條件的資料!":
         return {}
 
-    return {
-        normalize_chip_ticker(row[0]): to_int(row[-1])
-        for row in tables[0].get("data", [])
-    }
+    results = {}
+    for row in tables[0].get("data", []):
+        if len(row) < 2:
+            continue
+        results[normalize_chip_ticker(row[0])] = to_int(row[-1])
+
+    return results
 
 
 def fetch_recent_chip_days():
