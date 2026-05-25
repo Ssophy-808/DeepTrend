@@ -554,6 +554,28 @@ def format_integer(value):
         return value
 
 
+def format_signed_pct(value):
+    if pd.isna(value):
+        return ""
+    try:
+        return f"{float(value):+,.2f}%"
+    except (TypeError, ValueError):
+        return value
+
+
+def value_color(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "#aaaaaa"
+
+    if number > 0:
+        return "#ff4b4b"
+    if number < 0:
+        return "#22c55e"
+    return "#aaaaaa"
+
+
 def load_stock_result():
     try:
         return pd.read_excel(RESULT_FILE)
@@ -690,8 +712,77 @@ def render_rank(top_strength):
         st.markdown(html, unsafe_allow_html=True)
 
 
+def render_stock_radar(filtered_df):
+    st.subheader("📊 股票雷達")
+    st.caption(f"目前顯示 {len(filtered_df)} 檔股票")
+
+    if filtered_df.empty:
+        st.info("目前沒有符合篩選條件的股票。")
+        return
+
+    card_df = filtered_df.sort_values(["技術分數", "乖離率"], ascending=[False, False])
+    columns = st.columns(3)
+
+    for index, (_, row) in enumerate(card_df.iterrows()):
+        change = row.get("今日漲跌幅", pd.NA)
+        bias = row.get("乖離率", pd.NA)
+        change_color = value_color(change)
+        bias_color = value_color(bias)
+        score = format_number(row.get("技術分數"), 0)
+        status = row.get("狀態", "")
+        judgement = row.get("綜合判斷", "")
+        time_text = row.get("資料時間", "")
+
+        html = dedent(
+            f"""
+            <div style="
+                min-height:210px;
+                padding:18px;
+                margin-bottom:14px;
+                border:1px solid #2f3542;
+                border-radius:8px;
+                background:#111827;
+            ">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+                    <div>
+                        <div style="font-size:22px;font-weight:800;color:#ffffff;line-height:1.2;">{row["股票名稱"]}</div>
+                        <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {time_text}</div>
+                    </div>
+                    <div style="font-size:18px;font-weight:800;color:#ffffff;white-space:nowrap;">{score}</div>
+                </div>
+                <div style="margin-top:14px;font-size:14px;color:#d1d5db;">{status}　{judgement}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:18px;">
+                    <div>
+                        <div style="font-size:12px;color:#9ca3af;">收盤價</div>
+                        <div style="font-size:19px;font-weight:800;color:#ffffff;">{format_number(row.get("收盤價"))}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:12px;color:#9ca3af;">今日漲跌幅</div>
+                        <div style="font-size:19px;font-weight:800;color:{change_color};">{format_signed_pct(change)}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:12px;color:#9ca3af;">乖離率</div>
+                        <div style="font-size:19px;font-weight:800;color:{bias_color};">{format_signed_pct(bias)}</div>
+                    </div>
+                </div>
+                <div style="
+                    margin-top:16px;
+                    padding-top:12px;
+                    border-top:1px solid #253041;
+                    color:#9ca3af;
+                    font-size:13px;
+                    line-height:1.45;
+                ">{row.get("技術面", "")}</div>
+            </div>
+            """
+        ).replace("\n", "")
+
+        with columns[index % 3]:
+            st.markdown(html, unsafe_allow_html=True)
+
+
 def render_scan_table(filtered_df):
-    st.subheader("📊 股票掃描結果")
+    st.subheader("📋 詳細表格")
     st.write(f"目前顯示 {len(filtered_df)} 檔股票")
 
     if filtered_df.empty:
@@ -932,9 +1023,12 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-tab_scan, tab_rank, tab_detail = st.tabs(["📊 股票掃描", "🚀 強勢排行榜", "🔎 個股查詢"])
+tab_radar, tab_table, tab_rank, tab_detail = st.tabs(["📊 股票雷達", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"])
 
-with tab_scan:
+with tab_radar:
+    render_stock_radar(filtered_df)
+
+with tab_table:
     render_scan_table(filtered_df)
 
 with tab_rank:
