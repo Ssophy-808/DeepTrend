@@ -716,6 +716,13 @@ def render_rank(top_strength):
         st.markdown(html, unsafe_allow_html=True)
 
 
+def open_stock_detail(stock_code):
+    stock_code = str(stock_code)
+    st.session_state["pending_detail_stock"] = stock_code
+    st.session_state["detail_stock"] = stock_code
+    st.session_state["active_view"] = "🔎 個股查詢"
+
+
 def render_stock_radar(filtered_df):
     st.subheader("📊 股票雷達")
     st.caption(f"目前顯示 {len(filtered_df)} 檔股票")
@@ -802,6 +809,15 @@ def render_stock_radar(filtered_df):
 
         with columns[index % 3]:
             st.markdown(html, unsafe_allow_html=True)
+            stock_code = str(row["股票代號"])
+            stock_name = str(row["股票名稱"])
+            st.button(
+                f"查看 {stock_name}",
+                key=f"open_detail_{stock_code}_{index}",
+                on_click=open_stock_detail,
+                args=(stock_code,),
+                use_container_width=True,
+            )
 
 
 def render_scan_table(filtered_df):
@@ -872,7 +888,21 @@ def render_detail(filtered_df):
         st.info("請調整篩選條件後再查看個股。")
         return
 
-    selected_stock = st.selectbox("選擇股票查看K線", filtered_df["股票代號"].astype(str))
+    stock_options = filtered_df["股票代號"].astype(str).tolist()
+    preferred_stock = str(st.session_state.pop("pending_detail_stock", ""))
+    current_detail_stock = str(st.session_state.get("detail_stock", ""))
+
+    if preferred_stock in stock_options:
+        st.session_state["detail_stock"] = preferred_stock
+    elif current_detail_stock not in stock_options:
+        st.session_state["detail_stock"] = stock_options[0]
+
+    selected_stock = st.selectbox(
+        "選擇股票查看K線",
+        stock_options,
+        key="detail_stock",
+    )
+    st.session_state["selected_detail_stock"] = selected_stock
     selected_row = filtered_df[filtered_df["股票代號"].astype(str) == selected_stock].iloc[0]
 
     st.markdown("## 🔎 個股分析摘要")
@@ -1066,16 +1096,23 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-tab_radar, tab_table, tab_rank, tab_detail = st.tabs(["📊 股票雷達", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"])
+view_options = ["📊 股票雷達", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"]
+if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
+    st.session_state["active_view"] = view_options[0]
 
-with tab_radar:
+active_view = st.radio(
+    "功能選單",
+    view_options,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="active_view",
+)
+
+if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
-
-with tab_table:
+elif active_view == "📋 詳細表格":
     render_scan_table(filtered_df)
-
-with tab_rank:
+elif active_view == "🚀 強勢排行榜":
     render_rank(top_strength)
-
-with tab_detail:
+else:
     render_detail(filtered_df)
