@@ -413,7 +413,7 @@ def get_twse_realtime_map(tickers):
 
 
 def get_txff_signal(name="台指近月"):
-    page_url = "https://www.cmoney.tw/finance/futuresnearbytxf.aspx?key=TXF1PM"
+    page_url = "https://www.cmoney.tw/finance/futuresnearbytxf.aspx?key=TXF"
     api_url = "https://www.cmoney.tw/finance/ashx/FuturesData.ashx"
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -423,16 +423,16 @@ def get_txff_signal(name="台指近月"):
     try:
         page = requests.get(page_url, timeout=10, verify=False, headers=headers).text
         match = re.search(
-            r"futuresnearbytxf\.aspx\?key=TXF1PM'[^>]+cmkey='([^']+)'",
+            r"futuresnearbytxf\.aspx\?key=TXF'[^>]+cmkey='([^']+)'",
             page,
         )
-        cmkey = match.group(1) if match else "oqRHZNsm42MVMSmRgj7fRQ=="
+        cmkey = match.group(1) if match else "sTSLLtHqmQ64ZssRyEDLIA=="
 
         data = requests.get(
             api_url,
             params={
                 "action": "GetNearFutureInstantData",
-                "key": "TXF1PM",
+                "key": "TXF",
                 "cmkey": cmkey,
             },
             timeout=10,
@@ -447,9 +447,13 @@ def get_txff_signal(name="台指近月"):
     change = float(info.get("PriceDifference") or 0)
     change_pct = float(info.get("MagnitudeOfPrice") or 0)
     trade_time = str(info.get("SaleTe") or "")
+    code = str(info.get("Commkey") or "TXFF")
+
+    if latest_close == 0:
+        return empty_market_signal("TXFF", name, "CMoney 台指近月回傳價格為 0")
 
     signal = "無訊號"
-    reason = f"TXF1PM 即時報價 {trade_time}"
+    reason = f"{code} 即時報價 {trade_time}"
 
     if change > 0:
         signal = "🟢 偏多"
@@ -460,7 +464,7 @@ def get_txff_signal(name="台指近月"):
 
     return {
         "名稱": name,
-        "代號": "TXFF",
+        "代號": code,
         "價格標籤": "收盤/即時價",
         "收盤價": round(latest_close, 2),
         "漲跌": round(change, 2),
