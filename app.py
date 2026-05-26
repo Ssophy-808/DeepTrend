@@ -746,6 +746,10 @@ def render_stock_radar(filtered_df):
         time_text = row.get("資料時間", "")
         volume_price_signal = row.get("量價異常", "無明顯異常")
         signal_color = "#facc15" if str(volume_price_signal) != "無明顯異常" else "#9ca3af"
+        foreign_5d = row.get("外資5日", pd.NA)
+        investment_5d = row.get("投信5日", pd.NA)
+        foreign_color = value_color(foreign_5d)
+        investment_color = value_color(investment_5d)
 
         html = dedent(
             f"""
@@ -766,6 +770,10 @@ def render_stock_radar(filtered_df):
                 </div>
                 <div style="margin-top:14px;font-size:14px;color:#d1d5db;">{status}　{judgement}</div>
                 <div style="margin-top:10px;font-size:13px;font-weight:700;color:{signal_color};">{volume_price_signal}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+                    <div style="font-size:13px;color:#d1d5db;">外資5日 <span style="font-weight:800;color:{foreign_color};">{format_integer(foreign_5d)}</span></div>
+                    <div style="font-size:13px;color:#d1d5db;">投信5日 <span style="font-weight:800;color:{investment_color};">{format_integer(investment_5d)}</span></div>
+                </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:18px;">
                     <div>
                         <div style="font-size:12px;color:#9ca3af;">收盤價</div>
@@ -816,13 +824,30 @@ def render_scan_table(filtered_df):
         latest_time_text = latest_times[-1] if latest_times else "尚未取得"
         st.caption(f"即時資料更新：{updated_count}/{len(display_df)} 檔，最新時間 {latest_time_text}")
 
-    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅", "量價異常"]
+    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅", "量價異常", "外資5日", "投信5日"]
     ordered_columns = [col for col in front_columns if col in display_df.columns]
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
 
     price_columns = ["收盤價", "今日漲跌幅", "5日線", "10日線", "20日線", "20日高點", "20日低點", "乖離率"]
-    chip_columns = ["籌碼1日", "籌碼3日", "籌碼5日", "籌碼10日"]
+    chip_columns = [
+        "籌碼1日",
+        "籌碼3日",
+        "籌碼5日",
+        "籌碼10日",
+        "外資1日",
+        "外資3日",
+        "外資5日",
+        "外資10日",
+        "投信1日",
+        "投信3日",
+        "投信5日",
+        "投信10日",
+        "自營商1日",
+        "自營商3日",
+        "自營商5日",
+        "自營商10日",
+    ]
 
     for col in chip_columns:
         if col in display_df.columns:

@@ -170,7 +170,7 @@ def generate_ai_comment(judgement, technical_reasons, chip_reasons, score):
     return f"風險偏高：{reason_text}。目前不適合積極追蹤，等待結構改善。"
 
 
-def score_chip(chip_1d, chip_3d, chip_5d, chip_10d):
+def score_chip(chip_1d, chip_3d, chip_5d, chip_10d, foreign_5d, investment_5d):
     score = 0
     reasons = []
 
@@ -210,6 +210,17 @@ def score_chip(chip_1d, chip_3d, chip_5d, chip_10d):
 
     if not reasons:
         reasons.append("籌碼中性")
+
+    if foreign_5d > 0 and investment_5d > 0:
+        score += 20
+        reasons.append("外資投信同步買超")
+    elif foreign_5d < 0 and investment_5d < 0:
+        score -= 20
+        reasons.append("外資投信同步賣超")
+    elif foreign_5d > 0 and investment_5d < 0:
+        reasons.append("外資買投信賣")
+    elif foreign_5d < 0 and investment_5d > 0:
+        reasons.append("投信買外資賣")
 
     return score, reasons
 
@@ -346,11 +357,26 @@ def main():
         chip_rows = chip_data[chip_data["ticker"].astype(str) == chip_ticker]
 
         chip_1d = chip_3d = chip_5d = chip_10d = 0
+        foreign_1d = foreign_3d = foreign_5d = foreign_10d = 0
+        investment_1d = investment_3d = investment_5d = investment_10d = 0
+        dealer_1d = dealer_3d = dealer_5d = dealer_10d = 0
         if not chip_rows.empty:
             chip_1d = int(chip_rows["buy_sell_1d"].sum())
             chip_3d = int(chip_rows["buy_sell_3d"].sum())
             chip_5d = int(chip_rows["buy_sell_5d"].sum())
             chip_10d = int(chip_rows["buy_sell_10d"].sum())
+            foreign_1d = int(chip_rows["foreign_1d"].sum()) if "foreign_1d" in chip_rows else 0
+            foreign_3d = int(chip_rows["foreign_3d"].sum()) if "foreign_3d" in chip_rows else 0
+            foreign_5d = int(chip_rows["foreign_5d"].sum()) if "foreign_5d" in chip_rows else 0
+            foreign_10d = int(chip_rows["foreign_10d"].sum()) if "foreign_10d" in chip_rows else 0
+            investment_1d = int(chip_rows["investment_1d"].sum()) if "investment_1d" in chip_rows else 0
+            investment_3d = int(chip_rows["investment_3d"].sum()) if "investment_3d" in chip_rows else 0
+            investment_5d = int(chip_rows["investment_5d"].sum()) if "investment_5d" in chip_rows else 0
+            investment_10d = int(chip_rows["investment_10d"].sum()) if "investment_10d" in chip_rows else 0
+            dealer_1d = int(chip_rows["dealer_1d"].sum()) if "dealer_1d" in chip_rows else 0
+            dealer_3d = int(chip_rows["dealer_3d"].sum()) if "dealer_3d" in chip_rows else 0
+            dealer_5d = int(chip_rows["dealer_5d"].sum()) if "dealer_5d" in chip_rows else 0
+            dealer_10d = int(chip_rows["dealer_10d"].sum()) if "dealer_10d" in chip_rows else 0
 
         technical_score, technical_reasons = score_technical(
             close,
@@ -364,7 +390,14 @@ def main():
             recent_high,
             recent_low,
         )
-        chip_score, chip_reasons = score_chip(chip_1d, chip_3d, chip_5d, chip_10d)
+        chip_score, chip_reasons = score_chip(
+            chip_1d,
+            chip_3d,
+            chip_5d,
+            chip_10d,
+            foreign_5d,
+            investment_5d,
+        )
         volume_price_score, volume_price_signals = detect_volume_price_signal(
             close,
             prev_close,
@@ -395,6 +428,18 @@ def main():
                 "籌碼3日": chip_3d,
                 "籌碼5日": chip_5d,
                 "籌碼10日": chip_10d,
+                "外資1日": foreign_1d,
+                "外資3日": foreign_3d,
+                "外資5日": foreign_5d,
+                "外資10日": foreign_10d,
+                "投信1日": investment_1d,
+                "投信3日": investment_3d,
+                "投信5日": investment_5d,
+                "投信10日": investment_10d,
+                "自營商1日": dealer_1d,
+                "自營商3日": dealer_3d,
+                "自營商5日": dealer_5d,
+                "自營商10日": dealer_10d,
                 "技術分數": score,
                 "狀態": status,
                 "綜合判斷": judgement,

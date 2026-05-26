@@ -35,6 +35,18 @@ def normalize_chip_ticker(ticker):
     return f"{code}.TW"
 
 
+def find_field(fields, keyword, exclude=None):
+    exclude = exclude or []
+    for index, field in enumerate(fields):
+        if keyword in field and all(word not in field for word in exclude):
+            return index
+    return None
+
+
+def empty_chip():
+    return {"total": 0, "foreign": 0, "investment": 0, "dealer": 0}
+
+
 def fetch_twse_chip(day):
     url = "https://www.twse.com.tw/rwd/zh/fund/T86"
     params = {
@@ -51,12 +63,36 @@ def fetch_twse_chip(day):
     fields = payload.get("fields", [])
     code_index = fields.index("證券代號")
     total_index = fields.index("三大法人買賣超股數")
+    foreign_index = find_field(fields, "外陸資買賣超股數", exclude=["不含"])
+    foreign_ex_dealer_index = find_field(fields, "外陸資買賣超股數(不含外資自營商)")
+    foreign_dealer_index = find_field(fields, "外資自營商買賣超股數")
+    investment_index = find_field(fields, "投信買賣超股數")
+    dealer_index = find_field(fields, "自營商買賣超股數")
 
     results = {}
     for row in payload.get("data", []):
         if len(row) <= max(code_index, total_index):
             continue
-        results[normalize_chip_ticker(row[code_index])] = to_int(row[total_index])
+
+        total = to_int(row[total_index])
+        investment = to_int(row[investment_index]) if investment_index is not None and len(row) > investment_index else 0
+        if foreign_index is not None and len(row) > foreign_index:
+            foreign = to_int(row[foreign_index])
+        else:
+            foreign = 0
+            if foreign_ex_dealer_index is not None and len(row) > foreign_ex_dealer_index:
+                foreign += to_int(row[foreign_ex_dealer_index])
+            if foreign_dealer_index is not None and len(row) > foreign_dealer_index:
+                foreign += to_int(row[foreign_dealer_index])
+
+        dealer = total - foreign - investment
+
+        results[normalize_chip_ticker(row[code_index])] = {
+            "total": total,
+            "foreign": foreign,
+            "investment": investment,
+            "dealer": dealer,
+        }
 
     return results
 
@@ -82,7 +118,17 @@ def fetch_tpex_chip(day):
     for row in tables[0].get("data", []):
         if len(row) < 2:
             continue
-        results[normalize_chip_ticker(row[0])] = to_int(row[-1])
+        total = to_int(row[-1])
+        foreign = to_int(row[10]) if len(row) > 10 else 0
+        investment = to_int(row[13]) if len(row) > 13 else 0
+        dealer = total - foreign - investment
+
+        results[normalize_chip_ticker(row[0])] = {
+            "total": total,
+            "foreign": foreign,
+            "investment": investment,
+            "dealer": dealer,
+        }
 
     return results
 
@@ -98,8 +144,11 @@ def fetch_recent_chip_days():
             continue
 
         day_chip = {}
-        day_chip.update(fetch_twse_chip(day))
-        day_chip.update(fetch_tpex_chip(day))
+        for source_data in [fetch_twse_chip(day), fetch_tpex_chip(day)]:
+            for ticker, chip in source_data.items():
+                merged = day_chip.setdefault(ticker, empty_chip())
+                for key in merged:
+                    merged[key] += chip.get(key, 0)
 
         if day_chip:
             chip_days.append(day_chip)
@@ -122,14 +171,30 @@ def main():
 
     rows = []
     for ticker in tickers:
-        values = [day_chip.get(ticker, 0) for day_chip in chip_days]
+        values = [day_chip.get(ticker, empty_chip()) for day_chip in chip_days]
+        total_values = [value["total"] for value in values]
+        foreign_values = [value["foreign"] for value in values]
+        investment_values = [value["investment"] for value in values]
+        dealer_values = [value["dealer"] for value in values]
         rows.append(
             {
                 "ticker": ticker,
-                "buy_sell_1d": sum(values[:1]),
-                "buy_sell_3d": sum(values[:3]),
-                "buy_sell_5d": sum(values[:5]),
-                "buy_sell_10d": sum(values[:10]),
+                "buy_sell_1d": sum(total_values[:1]),
+                "buy_sell_3d": sum(total_values[:3]),
+                "buy_sell_5d": sum(total_values[:5]),
+                "buy_sell_10d": sum(total_values[:10]),
+                "foreign_1d": sum(foreign_values[:1]),
+                "foreign_3d": sum(foreign_values[:3]),
+                "foreign_5d": sum(foreign_values[:5]),
+                "foreign_10d": sum(foreign_values[:10]),
+                "investment_1d": sum(investment_values[:1]),
+                "investment_3d": sum(investment_values[:3]),
+                "investment_5d": sum(investment_values[:5]),
+                "investment_10d": sum(investment_values[:10]),
+                "dealer_1d": sum(dealer_values[:1]),
+                "dealer_3d": sum(dealer_values[:3]),
+                "dealer_5d": sum(dealer_values[:5]),
+                "dealer_10d": sum(dealer_values[:10]),
             }
         )
 
