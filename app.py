@@ -824,7 +824,9 @@ def render_scan_table(filtered_df):
         latest_time_text = latest_times[-1] if latest_times else "尚未取得"
         st.caption(f"即時資料更新：{updated_count}/{len(display_df)} 檔，最新時間 {latest_time_text}")
 
-    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅", "量價異常", "外資5日", "投信5日"]
+    display_df = display_df.drop(columns=["資料時間"], errors="ignore")
+
+    front_columns = ["狀態", "股票代號", "股票名稱", "收盤價", "今日漲跌幅", "乖離率", "量價異常", "外資5日", "投信5日"]
     ordered_columns = [col for col in front_columns if col in display_df.columns]
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
