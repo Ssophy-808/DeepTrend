@@ -214,6 +214,26 @@ def score_chip(chip_1d, chip_3d, chip_5d, chip_10d):
     return score, reasons
 
 
+def detect_volume_price_signal(close, prev_close, volume, avg_volume_5, previous_20d_high):
+    signals = []
+    score = 0
+    change_pct = ((close - prev_close) / prev_close * 100) if prev_close else 0
+    volume_ratio = (volume / avg_volume_5) if avg_volume_5 else 0
+
+    if volume_ratio >= 2 and change_pct <= 0.5:
+        signals.append("爆量價未漲")
+        score -= 20
+
+    if volume_ratio >= 1.5 and close > previous_20d_high:
+        signals.append("帶量突破20日高點")
+        score += 25
+
+    if not signals:
+        signals.append("無明顯異常")
+
+    return score, signals
+
+
 def score_technical(close, ma5, ma10, ma20, prev_ma5, prev_ma20, volume, avg_volume_5, recent_high, recent_low):
     score = 0
     reasons = []
@@ -305,6 +325,7 @@ def main():
             continue
 
         close = float(close_series.iloc[-1])
+        prev_close = float(close_series.iloc[-2])
         ma5_series = close_series.rolling(5).mean()
         ma10_series = close_series.rolling(10).mean()
         ma20_series = close_series.rolling(20).mean()
@@ -319,6 +340,7 @@ def main():
         avg_volume_5 = float(volume_series.rolling(5).mean().iloc[-1])
         recent_high = float(high_series.tail(20).max())
         recent_low = float(low_series.tail(20).min())
+        previous_20d_high = float(high_series.iloc[:-1].tail(20).max())
 
         chip_ticker = normalize_chip_ticker(ticker)
         chip_rows = chip_data[chip_data["ticker"].astype(str) == chip_ticker]
@@ -343,7 +365,17 @@ def main():
             recent_low,
         )
         chip_score, chip_reasons = score_chip(chip_1d, chip_3d, chip_5d, chip_10d)
-        score = technical_score + chip_score
+        volume_price_score, volume_price_signals = detect_volume_price_signal(
+            close,
+            prev_close,
+            volume,
+            avg_volume_5,
+            previous_20d_high,
+        )
+        score = technical_score + chip_score + volume_price_score
+        technical_reasons = technical_reasons + [
+            signal for signal in volume_price_signals if signal != "無明顯異常"
+        ]
         status, judgement = classify_score(score)
 
         results.append(
@@ -358,6 +390,7 @@ def main():
                 "5日均量": round(avg_volume_5, 0),
                 "20日高點": round(recent_high, 2),
                 "20日低點": round(recent_low, 2),
+                "量價異常": "、".join(volume_price_signals),
                 "籌碼1日": chip_1d,
                 "籌碼3日": chip_3d,
                 "籌碼5日": chip_5d,

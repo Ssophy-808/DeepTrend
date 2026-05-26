@@ -744,6 +744,8 @@ def render_stock_radar(filtered_df):
         status = row.get("狀態", "")
         judgement = row.get("綜合判斷", "")
         time_text = row.get("資料時間", "")
+        volume_price_signal = row.get("量價異常", "無明顯異常")
+        signal_color = "#facc15" if str(volume_price_signal) != "無明顯異常" else "#9ca3af"
 
         html = dedent(
             f"""
@@ -763,6 +765,7 @@ def render_stock_radar(filtered_df):
                     <div style="font-size:18px;font-weight:800;color:#ffffff;white-space:nowrap;">{score}</div>
                 </div>
                 <div style="margin-top:14px;font-size:14px;color:#d1d5db;">{status}　{judgement}</div>
+                <div style="margin-top:10px;font-size:13px;font-weight:700;color:{signal_color};">{volume_price_signal}</div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:18px;">
                     <div>
                         <div style="font-size:12px;color:#9ca3af;">收盤價</div>
@@ -813,7 +816,7 @@ def render_scan_table(filtered_df):
         latest_time_text = latest_times[-1] if latest_times else "尚未取得"
         st.caption(f"即時資料更新：{updated_count}/{len(display_df)} 檔，最新時間 {latest_time_text}")
 
-    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅"]
+    front_columns = ["股票代號", "股票名稱", "資料時間", "收盤價", "今日漲跌幅", "量價異常"]
     ordered_columns = [col for col in front_columns if col in display_df.columns]
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
