@@ -413,7 +413,7 @@ def get_twse_realtime_map(tickers):
 
 
 def get_txff_signal(name="台指近月"):
-    page_url = "https://www.cmoney.tw/finance/futuresnearbytxf.aspx?key=TXF"
+    page_url = "https://www.cmoney.tw/finance/futuresnearbytxf.aspx?key=TXF1PM"
     api_url = "https://www.cmoney.tw/finance/ashx/FuturesData.ashx"
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -423,23 +423,30 @@ def get_txff_signal(name="台指近月"):
     try:
         page = requests.get(page_url, timeout=10, verify=False, headers=headers).text
         match = re.search(
-            r"futuresnearbytxf\.aspx\?key=TXF'[^>]+cmkey='([^']+)'",
+            r"futuresnearbytxf\.aspx\?key=TXF1PM'[^>]+title='台指期近月'[^>]+cmkey='([^']+)'",
             page,
         )
-        cmkey = match.group(1) if match else "sTSLLtHqmQ64ZssRyEDLIA=="
+        cmkey = match.group(1) if match else "KC0RXxR2JlTTibQFJiOCOg=="
 
-        data = requests.get(
-            api_url,
-            params={
-                "action": "GetNearFutureInstantData",
-                "key": "TXF",
-                "cmkey": cmkey,
-            },
-            timeout=10,
-            verify=False,
-            headers=headers,
-        ).json()
-        info = data["RealInfo"]
+        info = None
+        for futures_key in ("TXF1PM", "TXF"):
+            data = requests.get(
+                api_url,
+                params={
+                    "action": "GetNearFutureInstantData",
+                    "key": futures_key,
+                    "cmkey": cmkey,
+                },
+                timeout=10,
+                verify=False,
+                headers=headers,
+            ).json()
+            info = data.get("RealInfo")
+            if info and float(info.get("SalePr") or 0) > 0:
+                break
+
+        if not info:
+            return empty_market_signal("TXFF", name, "CMoney 台指近月未回傳即時資料")
     except Exception:
         return empty_market_signal("TXFF", name, "CMoney 即時資料抓取失敗")
 
