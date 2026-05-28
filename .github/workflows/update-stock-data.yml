@@ -15,10 +15,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -32,6 +32,16 @@ jobs:
 
       - name: Generate latest stock analysis
         run: python main.py
+
+      - name: Refresh data if remote changed during run
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "Remote main changed during this workflow. Regenerating data on latest main."
+            git reset --hard origin/main
+            python update_chip.py
+            python main.py
+          fi
 
       - name: Commit updated data
         uses: stefanzweifel/git-auto-commit-action@v5
