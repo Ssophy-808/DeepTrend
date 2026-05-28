@@ -5,6 +5,7 @@ import time
 import pandas as pd
 import requests
 import urllib3
+from requests.exceptions import RequestException
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -47,6 +48,22 @@ def empty_chip():
     return {"total": 0, "foreign": 0, "investment": 0, "dealer": 0}
 
 
+def get_json(url, *, params=None):
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=15,
+            verify=False,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        return response.json()
+    except (RequestException, ValueError) as exc:
+        print(f"略過籌碼來源：{url}，原因：{exc}")
+        return {}
+
+
 def fetch_twse_chip(day):
     url = "https://www.twse.com.tw/rwd/zh/fund/T86"
     params = {
@@ -54,8 +71,7 @@ def fetch_twse_chip(day):
         "selectType": "ALLBUT0999",
         "response": "json",
     }
-    response = requests.get(url, params=params, timeout=15, verify=False, headers={"User-Agent": "Mozilla/5.0"})
-    payload = response.json()
+    payload = get_json(url, params=params)
 
     if payload.get("stat") != "OK":
         return {}
@@ -107,8 +123,7 @@ def fetch_tpex_chip(day):
         "d": to_roc_date(day),
         "s": "0,asc",
     }
-    response = requests.get(url, params=params, timeout=15, verify=False, headers={"User-Agent": "Mozilla/5.0"})
-    payload = response.json()
+    payload = get_json(url, params=params)
     tables = payload.get("tables", [])
 
     if not tables or payload.get("stat") == "很抱歉，沒有符合條件的資料!":
@@ -144,7 +159,8 @@ def fetch_recent_chip_days():
             continue
 
         day_chip = {}
-        for source_data in [fetch_twse_chip(day), fetch_tpex_chip(day)]:
+        for fetcher in (fetch_twse_chip, fetch_tpex_chip):
+            source_data = fetcher(day)
             for ticker, chip in source_data.items():
                 merged = day_chip.setdefault(ticker, empty_chip())
                 for key in merged:
