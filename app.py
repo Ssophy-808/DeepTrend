@@ -422,26 +422,37 @@ def get_txff_signal(name="台指近月"):
 
     try:
         page = requests.get(page_url, timeout=10, verify=False, headers=headers).text
-        match = re.search(
-            r"futuresnearbytxf\.aspx\?key=TXF1PM'[^>]+title='台指期近月'[^>]+cmkey='([^']+)'",
-            page,
-        )
-        cmkey = match.group(1) if match else "KC0RXxR2JlTTibQFJiOCOg=="
+        cmkeys = []
+        for match in re.finditer(r"<a [^>]*futuresnearbytxf\.aspx\?key=[^']+'[^>]*>", page):
+            anchor = match.group(0)
+            key_match = re.search(r"cmkey='([^']+)'", anchor)
+            if key_match and key_match.group(1) not in cmkeys:
+                cmkeys.append(key_match.group(1))
+
+        if not cmkeys:
+            cmkeys = re.findall(r"cmkey='([^']+)'", page)
+
+        for fallback_key in ("BDeHVSgtX1n5LWX2LS3UhQ==", "KC0RXxR2JlTTibQFJiOCOg=="):
+            if fallback_key not in cmkeys:
+                cmkeys.append(fallback_key)
 
         info = None
-        for futures_key in ("TXF1PM", "TXF"):
-            data = requests.get(
-                api_url,
-                params={
-                    "action": "GetNearFutureInstantData",
-                    "key": futures_key,
-                    "cmkey": cmkey,
-                },
-                timeout=10,
-                verify=False,
-                headers=headers,
-            ).json()
-            info = data.get("RealInfo")
+        for cmkey in cmkeys:
+            for futures_key in ("TXF1PM", "TXF"):
+                data = requests.get(
+                    api_url,
+                    params={
+                        "action": "GetNearFutureInstantData",
+                        "key": futures_key,
+                        "cmkey": cmkey,
+                    },
+                    timeout=10,
+                    verify=False,
+                    headers=headers,
+                ).json()
+                info = data.get("RealInfo")
+                if info and float(info.get("SalePr") or 0) > 0:
+                    break
             if info and float(info.get("SalePr") or 0) > 0:
                 break
 
