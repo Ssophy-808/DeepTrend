@@ -544,6 +544,35 @@ def render_market_card(market):
     st.markdown(html, unsafe_allow_html=True)
 
 
+def render_market_sentiment(sentiment):
+    status = sentiment["status"]
+    color = "#22c55e" if "偏多" in status else "#ef4444" if "偏空" in status else "#facc15"
+    html = dedent(
+        f"""
+        <div style="
+            padding:18px;
+            border:1px solid #333;
+            border-radius:8px;
+            background:#111827;
+            margin-bottom:14px;
+        ">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                <div>
+                    <div style="font-size:15px;color:#9ca3af;">市場情緒燈號</div>
+                    <div style="font-size:34px;font-weight:900;color:{color};line-height:1.2;">{status}</div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:14px;color:#d1d5db;font-size:14px;">
+                    <div>綜合分數 <b style="color:#ffffff;">{sentiment["score"]:+d}</b></div>
+                    <div>上漲檔數 <b style="color:#ffffff;">{sentiment["rising_count"]}/{sentiment["valid_count"]}</b></div>
+                    <div>AI股 <b style="color:#ffffff;">{sentiment["ai_status"]}</b></div>
+                </div>
+            </div>
+        </div>
+        """
+    ).replace("\n", "")
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def color_status(val):
     value = str(val)
 
@@ -698,6 +727,67 @@ def build_group_heat(df):
     return pd.DataFrame(rows).sort_values(["熱度分數", "偏多比例"], ascending=False)
 
 
+def add_signal_labels(df):
+    labeled_df = df.copy()
+
+    ma5 = pd.to_numeric(labeled_df.get("5日線"), errors="coerce")
+    ma10 = pd.to_numeric(labeled_df.get("10日線"), errors="coerce")
+    ma20 = pd.to_numeric(labeled_df.get("20日線"), errors="coerce")
+    close = pd.to_numeric(labeled_df.get("收盤價"), errors="coerce")
+    volume = pd.to_numeric(labeled_df.get("成交量"), errors="coerce")
+    avg_volume_5 = pd.to_numeric(labeled_df.get("5日均量"), errors="coerce")
+    high_20 = pd.to_numeric(labeled_df.get("20日高點"), errors="coerce")
+
+    labeled_df["均線型態"] = "中性"
+    labeled_df.loc[(ma5 > ma10) & (ma10 > ma20), "均線型態"] = "🔥 多頭排列"
+    labeled_df.loc[(ma5 < ma10) & (ma10 < ma20), "均線型態"] = "🔴 空頭排列"
+
+    strong_breakout = (volume > avg_volume_5 * 2) & (close >= high_20)
+    volume_breakout = (volume > avg_volume_5 * 1.5) & (close >= high_20)
+
+    labeled_df["突破警報"] = "無"
+    labeled_df.loc[volume_breakout, "突破警報"] = "🟢 帶量突破"
+    labeled_df.loc[strong_breakout, "突破警報"] = "🚨 強勢突破"
+
+    return labeled_df
+
+
+def build_market_sentiment(markets, df):
+    twse = markets[0] if markets else {}
+    futures = markets[2] if len(markets) > 2 else {}
+    heat_df = build_group_heat(df)
+    ai_heat = heat_df[heat_df["族群"] == "AI伺服器"] if not heat_df.empty else pd.DataFrame()
+
+    rising_count = int((pd.to_numeric(df.get("今日漲跌幅"), errors="coerce") > 0).sum())
+    valid_count = int(pd.to_numeric(df.get("今日漲跌幅"), errors="coerce").notna().sum())
+    rising_ratio = rising_count / valid_count if valid_count else 0
+
+    score = 0
+    score += 1 if twse.get("漲跌", 0) > 0 else -1 if twse.get("漲跌", 0) < 0 else 0
+    score += 1 if futures.get("漲跌", 0) > 0 else -1 if futures.get("漲跌", 0) < 0 else 0
+
+    if not ai_heat.empty:
+        ai_score = float(ai_heat.iloc[0]["熱度分數"])
+        score += 1 if ai_score >= 55 else -1 if ai_score < 35 else 0
+
+    score += 1 if rising_ratio >= 0.55 else -1 if rising_ratio < 0.45 else 0
+
+    if score >= 2:
+        status = "🟢 偏多"
+    elif score <= -2:
+        status = "🔴 偏空"
+    else:
+        status = "🟡 震盪"
+
+    return {
+        "status": status,
+        "score": score,
+        "rising_count": rising_count,
+        "valid_count": valid_count,
+        "ai_status": ai_heat.iloc[0]["狀態"] if not ai_heat.empty else "無資料",
+    }
+
+
 def load_stock_result():
     try:
         return pd.read_excel(RESULT_FILE)
@@ -727,7 +817,7 @@ def prepare_stock_data(df):
         df["今日漲跌幅"] = pd.NA
 
     df["乖離率"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
-    return df
+    return add_signal_labels(df)
 
 
 def apply_realtime_prices(df):
@@ -811,7 +901,7 @@ def apply_realtime_prices(df):
             (updated_df["收盤價"] - updated_df["5日線"]) / updated_df["5日線"] * 100
         ).round(2)
 
-    return updated_df
+    return add_signal_labels(updated_df)
 
 
 def render_rank(top_strength):
@@ -917,7 +1007,10 @@ def render_stock_radar(filtered_df):
         judgement = row.get("綜合判斷", "")
         time_text = row.get("資料時間", "")
         volume_price_signal = row.get("量價異常", "無明顯異常")
-        signal_color = "#facc15" if str(volume_price_signal) != "無明顯異常" else "#9ca3af"
+        ma_pattern = row.get("均線型態", "中性")
+        breakout_alert = row.get("突破警報", "無")
+        signal_text = breakout_alert if str(breakout_alert) != "無" else volume_price_signal
+        signal_color = "#facc15" if str(signal_text) != "無明顯異常" and str(signal_text) != "無" else "#9ca3af"
         foreign_5d = row.get("外資5日", pd.NA)
         investment_5d = row.get("投信5日", pd.NA)
         foreign_color = value_color(foreign_5d)
@@ -941,7 +1034,10 @@ def render_stock_radar(filtered_df):
                     <div style="font-size:18px;font-weight:800;color:#ffffff;white-space:nowrap;">{score}</div>
                 </div>
                 <div style="margin-top:14px;font-size:14px;color:#d1d5db;">{status}　{judgement}</div>
-                <div style="margin-top:10px;font-size:13px;font-weight:700;color:{signal_color};">{volume_price_signal}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+                    <div style="font-size:13px;font-weight:700;color:#d1d5db;">{ma_pattern}</div>
+                    <div style="font-size:13px;font-weight:700;color:{signal_color};">{signal_text}</div>
+                </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
                     <div style="font-size:13px;color:#d1d5db;">外資5日 <span style="font-weight:800;color:{foreign_color};">{format_integer(foreign_5d)}</span></div>
                     <div style="font-size:13px;color:#d1d5db;">投信5日 <span style="font-weight:800;color:{investment_color};">{format_integer(investment_5d)}</span></div>
@@ -1007,7 +1103,19 @@ def render_scan_table(filtered_df):
 
     display_df = display_df.drop(columns=["資料時間"], errors="ignore")
 
-    front_columns = ["狀態", "股票代號", "股票名稱", "收盤價", "今日漲跌幅", "乖離率", "量價異常", "外資5日", "投信5日"]
+    front_columns = [
+        "狀態",
+        "股票代號",
+        "股票名稱",
+        "均線型態",
+        "突破警報",
+        "收盤價",
+        "今日漲跌幅",
+        "乖離率",
+        "量價異常",
+        "外資5日",
+        "投信5日",
+    ]
     ordered_columns = [col for col in front_columns if col in display_df.columns]
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
@@ -1078,6 +1186,10 @@ def render_detail(filtered_df):
     col3.metric("狀態", selected_row["狀態"])
     col4.metric("綜合判斷", selected_row["綜合判斷"])
 
+    signal_col1, signal_col2 = st.columns(2)
+    signal_col1.metric("均線型態", selected_row.get("均線型態", "中性"))
+    signal_col2.metric("突破警報", selected_row.get("突破警報", "無"))
+
     st.markdown("### 📌 技術面")
     st.info(selected_row["技術面"])
 
@@ -1116,6 +1228,95 @@ def render_detail(filtered_df):
         return
 
     render_k_chart(k_df)
+
+
+def run_ma_backtest(history, holding_days=5):
+    if history.empty or len(history) < 30:
+        return pd.DataFrame()
+
+    test_df = history.copy().sort_values("日期").reset_index(drop=True)
+    test_df["收盤價"] = pd.to_numeric(test_df["收盤價"], errors="coerce")
+    test_df["MA5"] = test_df["收盤價"].rolling(5).mean()
+    test_df["MA20"] = test_df["收盤價"].rolling(20).mean()
+    test_df["prev_MA5"] = test_df["MA5"].shift(1)
+    test_df["prev_MA20"] = test_df["MA20"].shift(1)
+    test_df["signal"] = (test_df["prev_MA5"] <= test_df["prev_MA20"]) & (test_df["MA5"] > test_df["MA20"])
+
+    trades = []
+    for index, row in test_df[test_df["signal"]].iterrows():
+        exit_index = index + holding_days
+        if exit_index >= len(test_df):
+            continue
+
+        entry_price = float(row["收盤價"])
+        exit_price = float(test_df.loc[exit_index, "收盤價"])
+        if not entry_price:
+            continue
+
+        trades.append(
+            {
+                "進場日": row["日期"],
+                "進場價": entry_price,
+                "出場日": test_df.loc[exit_index, "日期"],
+                "出場價": exit_price,
+                "報酬率": round((exit_price - entry_price) / entry_price * 100, 2),
+            }
+        )
+
+    return pd.DataFrame(trades)
+
+
+def render_backtest_lab(df, markets):
+    st.subheader("🧪 回測實驗室")
+
+    if df.empty:
+        st.info("目前沒有股票資料可回測。")
+        return
+
+    col1, col2, col3 = st.columns([1.5, 1, 1])
+    with col1:
+        selected_stock = st.selectbox("回測股票", df["股票代號"].astype(str), key="backtest_stock")
+    with col2:
+        holding_days = st.selectbox("持有天數", [5, 10, 20], index=0)
+    with col3:
+        require_market_bullish = st.checkbox("台指偏多", value=True)
+
+    selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
+    symbol = normalize_tw_symbol(selected_stock)
+    history = get_official_daily_history(symbol)
+    market_is_bullish = len(markets) > 2 and markets[2].get("漲跌", 0) > 0
+    foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
+
+    if require_market_bullish and not market_is_bullish:
+        st.warning("目前台指近月不是偏多，策略條件未成立。")
+
+    trades = run_ma_backtest(history, holding_days=holding_days)
+    if pd.notna(foreign_3d) and foreign_3d <= 0:
+        st.warning("目前外資3日未連買，籌碼條件未成立。")
+
+    if trades.empty:
+        st.info("近 3 個月沒有符合 5MA 突破 20MA 的可完成交易。")
+        return
+
+    win_rate = (trades["報酬率"] > 0).mean() * 100
+    avg_return = trades["報酬率"].mean()
+    best_return = trades["報酬率"].max()
+    worst_return = trades["報酬率"].min()
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("交易次數", len(trades))
+    metric_cols[1].metric("勝率", f"{win_rate:.1f}%")
+    metric_cols[2].metric("平均報酬", f"{avg_return:+.2f}%")
+    metric_cols[3].metric("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%")
+
+    display_trades = trades.copy()
+    for col in ["進場日", "出場日"]:
+        display_trades[col] = pd.to_datetime(display_trades[col]).dt.strftime("%Y-%m-%d")
+    for col in ["進場價", "出場價"]:
+        display_trades[col] = display_trades[col].map(lambda value: format_number(value, 2))
+    display_trades["報酬率"] = display_trades["報酬率"].map(format_signed_pct)
+
+    st.dataframe(display_trades, use_container_width=True, hide_index=True)
 
 
 def render_k_chart(k_df):
@@ -1204,17 +1405,20 @@ with st.container(border=True):
     st.markdown("## 📡 市場方向觀察")
     st.caption("大盤訊號僅供參考，不納入個股評分")
 
+    preview_df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
     markets = [
         get_twse_realtime_signal("tse_t00.tw", "t00", "加權指數"),
         get_twse_realtime_signal("tse_0050.tw", "0050", "0050 ETF"),
         get_txff_signal("台指近月"),
     ]
 
+    render_market_sentiment(build_market_sentiment(markets, preview_df))
+
     for col, market in zip(st.columns(3), markets):
         with col:
             render_market_card(market)
 
-df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
+df = preview_df
 
 status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
 min_score_value = int(df["技術分數"].min())
@@ -1261,7 +1465,7 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-view_options = ["📊 股票雷達", "🔥 族群熱度", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"]
+view_options = ["📊 股票雷達", "🔥 族群熱度", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢", "🧪 回測實驗室"]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
 
@@ -1281,5 +1485,7 @@ elif active_view == "📋 詳細表格":
     render_scan_table(filtered_df)
 elif active_view == "🚀 強勢排行榜":
     render_rank(top_strength)
-else:
+elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
+else:
+    render_backtest_lab(df, markets)
