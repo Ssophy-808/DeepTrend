@@ -17,7 +17,6 @@ from plotly.subplots import make_subplots
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
 GROUP_FILE = BASE_DIR / "groups.csv"
-AUTO_REFRESH_SECONDS = 180
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -51,68 +50,6 @@ def download_market_data(symbol, period="3mo", interval="1d"):
         progress=False,
         auto_adjust=False,
     )
-
-
-def empty_market_signal(symbol, name, reason="抓不到資料"):
-    return {
-        "名稱": name,
-        "代號": symbol,
-        "收盤價": 0,
-        "漲跌": 0,
-        "漲跌幅": 0,
-        "5MA": 0,
-        "60MA": 0,
-        "訊號": "無資料",
-        "原因": reason,
-    }
-
-
-def get_market_signal(symbol, name):
-    market_df = download_market_data(symbol)
-
-    if market_df.empty or "Close" not in market_df.columns:
-        return empty_market_signal(symbol, name)
-
-    close_series = get_series(market_df, "Close").dropna()
-
-    if len(close_series) < 60:
-        return empty_market_signal(symbol, name, "資料不足，無法計算60MA")
-
-    ma5 = close_series.rolling(5).mean()
-    ma60 = close_series.rolling(60).mean()
-
-    latest_close = float(close_series.iloc[-1])
-    prev_close = float(close_series.iloc[-2])
-    latest_ma5 = float(ma5.iloc[-1])
-    latest_ma60 = float(ma60.iloc[-1])
-    prev_ma5 = float(ma5.iloc[-2])
-    prev_ma60 = float(ma60.iloc[-2])
-
-    change = latest_close - prev_close
-    change_pct = (change / prev_close) * 100 if prev_close else 0
-
-    signal = "無訊號"
-    reason = "目前未出現明確突破或跌破"
-
-    if latest_close > latest_ma60 and prev_ma5 <= prev_ma60 and latest_ma5 > latest_ma60:
-        signal = "🟢 買進訊號"
-        reason = "收盤價站上60MA，且5MA上穿60MA"
-    elif latest_close < latest_ma60 and prev_ma5 >= prev_ma60 and latest_ma5 < latest_ma60:
-        signal = "🔴 賣出訊號"
-        reason = "收盤價跌破60MA，且5MA下穿60MA"
-
-    return {
-        "名稱": name,
-        "代號": symbol,
-        "價格標籤": "收盤價",
-        "收盤價": round(latest_close, 2),
-        "漲跌": round(change, 2),
-        "漲跌幅": round(change_pct, 2),
-        "5MA": round(latest_ma5, 2),
-        "60MA": round(latest_ma60, 2),
-        "訊號": signal,
-        "原因": reason,
-    }
 
 
 def first_quote_price(value):
@@ -163,66 +100,6 @@ def recent_month_starts(month_count=3):
             year -= 1
 
     return starts
-
-
-def get_twse_realtime_signal(ex_ch, symbol, name):
-    url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://mis.twse.com.tw/stock/fibest.jsp?stock=0050",
-    }
-
-    try:
-        response = requests.get(
-            url,
-            params={"ex_ch": ex_ch, "json": "1", "delay": "0"},
-            timeout=10,
-            verify=False,
-            headers=headers,
-        )
-        item = response.json()["msgArray"][0]
-    except Exception:
-        return empty_market_signal(symbol, name, "證交所即時資料抓取失敗")
-
-    previous_close = to_float(item.get("y"))
-    latest_price = to_float(item.get("z"))
-
-    if latest_price == 0:
-        bid = first_quote_price(item.get("b"))
-        ask = first_quote_price(item.get("a"))
-
-        if bid and ask:
-            latest_price = (bid + ask) / 2
-        elif bid:
-            latest_price = bid
-        elif ask:
-            latest_price = ask
-        else:
-            latest_price = to_float(item.get("o")) or previous_close
-
-    change = latest_price - previous_close if previous_close else 0
-    change_pct = (change / previous_close) * 100 if previous_close else 0
-
-    signal = "無訊號"
-    if change > 0:
-        signal = "🟢 偏多"
-    elif change < 0:
-        signal = "🔴 偏空"
-
-    trade_time = item.get("t") or item.get("%") or ""
-
-    return {
-        "名稱": name,
-        "代號": symbol,
-        "價格標籤": "收盤/即時價",
-        "收盤價": round(latest_price, 2),
-        "漲跌": round(change, 2),
-        "漲跌幅": round(change_pct, 2),
-        "5MA": 0,
-        "60MA": 0,
-        "訊號": signal,
-        "原因": f"證交所即時資料 {trade_time}",
-    }
 
 
 def build_twse_channel(ticker):
@@ -413,166 +290,6 @@ def get_twse_realtime_map(tickers):
     return realtime
 
 
-def get_txff_signal(name="台指近月"):
-    page_url = "https://www.cmoney.tw/finance/futuresnearbytxf.aspx?key=TXF1PM"
-    api_url = "https://www.cmoney.tw/finance/ashx/FuturesData.ashx"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": page_url,
-    }
-
-    try:
-        page = requests.get(page_url, timeout=10, verify=False, headers=headers).text
-        cmkeys = []
-        for match in re.finditer(r"<a [^>]*futuresnearbytxf\.aspx\?key=[^']+'[^>]*>", page):
-            anchor = match.group(0)
-            key_match = re.search(r"cmkey='([^']+)'", anchor)
-            if key_match and key_match.group(1) not in cmkeys:
-                cmkeys.append(key_match.group(1))
-
-        if not cmkeys:
-            cmkeys = re.findall(r"cmkey='([^']+)'", page)
-
-        for fallback_key in ("BDeHVSgtX1n5LWX2LS3UhQ==", "KC0RXxR2JlTTibQFJiOCOg=="):
-            if fallback_key not in cmkeys:
-                cmkeys.append(fallback_key)
-
-        info = None
-        for cmkey in cmkeys:
-            for futures_key in ("TXF1PM", "TXF"):
-                data = requests.get(
-                    api_url,
-                    params={
-                        "action": "GetNearFutureInstantData",
-                        "key": futures_key,
-                        "cmkey": cmkey,
-                    },
-                    timeout=10,
-                    verify=False,
-                    headers=headers,
-                ).json()
-                info = data.get("RealInfo")
-                if info and float(info.get("SalePr") or 0) > 0:
-                    break
-            if info and float(info.get("SalePr") or 0) > 0:
-                break
-
-        if not info:
-            return empty_market_signal("TXFF", name, "CMoney 台指近月未回傳即時資料")
-    except Exception:
-        return empty_market_signal("TXFF", name, "CMoney 即時資料抓取失敗")
-
-    latest_close = float(info.get("SalePr") or 0)
-    change = float(info.get("PriceDifference") or 0)
-    change_pct = float(info.get("MagnitudeOfPrice") or 0)
-    trade_time = str(info.get("SaleTe") or "")
-    code = str(info.get("Commkey") or "TXFF")
-
-    if latest_close == 0:
-        return empty_market_signal("TXFF", name, "CMoney 台指近月回傳價格為 0")
-
-    signal = "無訊號"
-    reason = f"{code} 即時報價 {trade_time}"
-
-    if change > 0:
-        signal = "🟢 偏多"
-        reason += "，上漲"
-    elif change < 0:
-        signal = "🔴 偏空"
-        reason += "，下跌"
-
-    return {
-        "名稱": name,
-        "代號": code,
-        "價格標籤": "收盤/即時價",
-        "收盤價": round(latest_close, 2),
-        "漲跌": round(change, 2),
-        "漲跌幅": round(change_pct, 2),
-        "5MA": 0,
-        "60MA": 0,
-        "訊號": signal,
-        "原因": reason,
-    }
-
-
-def render_market_card(market):
-    change = market["漲跌"]
-    change_color = "#ff4b4b" if change > 0 else "#00c853" if change < 0 else "#aaaaaa"
-    arrow = "▲" if change > 0 else "▼" if change < 0 else "－"
-
-    html = dedent(
-        f"""
-        <div style="
-            padding:25px;
-            border:1px solid #333;
-            border-radius:20px;
-            background-color:#0e1117;
-            min-height:300px;
-        ">
-            <h2>{market["名稱"]}</h2>
-            <div style="font-size:18px;color:#aaaaaa;margin-top:20px;">{market.get("價格標籤", "現價")}</div>
-            <div style="
-                font-size:42px;
-                line-height:1.1;
-                font-weight:bold;
-                color:white;
-                margin-top:10px;
-                white-space:nowrap;
-                overflow:hidden;
-                text-overflow:ellipsis;
-            ">
-                {market["收盤價"]:,.2f}
-            </div>
-            <div style="
-                font-size:24px;
-                line-height:1.2;
-                font-weight:bold;
-                color:{change_color};
-                margin-top:10px;
-                white-space:nowrap;
-                overflow:hidden;
-                text-overflow:ellipsis;
-            ">
-                {arrow} {abs(market["漲跌"]):,.2f} ({market["漲跌幅"]:+.2f}%)
-            </div>
-            <div style="margin-top:20px;color:#cccccc;">訊號：{market["訊號"]}</div>
-            <div style="color:#888888;margin-top:8px;">{market["原因"]}</div>
-        </div>
-        """
-    ).replace("\n", "")
-
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def render_market_sentiment(sentiment):
-    status = sentiment["status"]
-    color = "#22c55e" if "偏多" in status else "#ef4444" if "偏空" in status else "#facc15"
-    html = dedent(
-        f"""
-        <div style="
-            padding:18px;
-            border:1px solid #333;
-            border-radius:8px;
-            background:#111827;
-            margin-bottom:14px;
-        ">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-                <div>
-                    <div style="font-size:15px;color:#9ca3af;">市場情緒燈號</div>
-                    <div style="font-size:34px;font-weight:900;color:{color};line-height:1.2;">{status}</div>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:14px;color:#d1d5db;font-size:14px;">
-                    <div>綜合分數 <b style="color:#ffffff;">{sentiment["score"]:+d}</b></div>
-                    <div>上漲檔數 <b style="color:#ffffff;">{sentiment["rising_count"]}/{sentiment["valid_count"]}</b></div>
-                    <div>AI股 <b style="color:#ffffff;">{sentiment["ai_status"]}</b></div>
-                </div>
-            </div>
-        </div>
-        """
-    ).replace("\n", "")
-    st.markdown(html, unsafe_allow_html=True)
-
-
 def color_status(val):
     value = str(val)
 
@@ -761,42 +478,6 @@ def add_signal_labels(df):
     labeled_df.loc[strong_breakout, "突破警報"] = "🚨 強勢突破"
 
     return labeled_df
-
-
-def build_market_sentiment(markets, df):
-    twse = markets[0] if markets else {}
-    futures = markets[2] if len(markets) > 2 else {}
-    heat_df = build_group_heat(df)
-    ai_heat = heat_df[heat_df["族群"] == "AI伺服器"] if not heat_df.empty else pd.DataFrame()
-
-    rising_count = int((pd.to_numeric(df.get("今日漲跌幅"), errors="coerce") > 0).sum())
-    valid_count = int(pd.to_numeric(df.get("今日漲跌幅"), errors="coerce").notna().sum())
-    rising_ratio = rising_count / valid_count if valid_count else 0
-
-    score = 0
-    score += 1 if twse.get("漲跌", 0) > 0 else -1 if twse.get("漲跌", 0) < 0 else 0
-    score += 1 if futures.get("漲跌", 0) > 0 else -1 if futures.get("漲跌", 0) < 0 else 0
-
-    if not ai_heat.empty:
-        ai_score = float(ai_heat.iloc[0]["熱度分數"])
-        score += 1 if ai_score >= 55 else -1 if ai_score < 35 else 0
-
-    score += 1 if rising_ratio >= 0.55 else -1 if rising_ratio < 0.45 else 0
-
-    if score >= 2:
-        status = "🟢 偏多"
-    elif score <= -2:
-        status = "🔴 偏空"
-    else:
-        status = "🟡 震盪"
-
-    return {
-        "status": status,
-        "score": score,
-        "rising_count": rising_count,
-        "valid_count": valid_count,
-        "ai_status": ai_heat.iloc[0]["狀態"] if not ai_heat.empty else "無資料",
-    }
 
 
 def load_stock_result():
@@ -1373,7 +1054,7 @@ def render_strategy_rank(df):
     )
 
 
-def render_backtest_lab(df, markets):
+def render_backtest_lab(df):
     st.subheader("🧪 回測實驗室")
 
     if df.empty:
@@ -1395,17 +1076,16 @@ def render_backtest_lab(df, markets):
     with col3:
         holding_days = st.selectbox("持有天數", [3, 5, 10], index=1)
     with col4:
-        require_market_bullish = st.checkbox("台指偏多", value=True)
+        market_is_bullish = st.checkbox("台指偏多", value=False)
 
     selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
     symbol = normalize_tw_symbol(selected_stock)
     month_count = 12 if period_label == "1年" else 6
     history = get_official_daily_history(symbol, month_count=month_count)
-    market_is_bullish = len(markets) > 2 and markets[2].get("漲跌", 0) > 0
     foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
 
-    if require_market_bullish and not market_is_bullish:
-        st.warning("目前台指近月不是偏多，策略條件未成立。")
+    if not market_is_bullish:
+        st.warning("台指偏多未勾選，策略條件未成立。")
 
     trades = run_ma_backtest(history, holding_days=holding_days, volume_multiplier=1.5)
     if pd.notna(foreign_3d) and foreign_3d <= 0:
@@ -1484,7 +1164,7 @@ def render_backtest_lab(df, markets):
         - 信賴度：交易次數少於 10 筆為低信賴，10 到 29 筆為中信賴，30 筆以上為高信賴。
         - 盈虧比：平均獲利 ÷ 平均虧損絕對值；數值越高，代表單次賺錢時能覆蓋更多虧損。
         - 報酬率未扣除手續費、交易稅、滑價與股利影響。
-        - `台指偏多` 和 `外資3日` 是目前盤勢條件提示，不會改寫歷史交易紀錄。
+        - `台指偏多` 為手動盤勢條件，`外資3日` 為目前籌碼提示；兩者不會改寫歷史交易紀錄。
         """
     )
 
@@ -1561,34 +1241,10 @@ def render_k_chart(k_df):
 
 st.set_page_config(page_title="DeepTrend", page_icon="🔥", layout="wide")
 
-st.markdown(
-    f"""
-    <meta http-equiv="refresh" content="{AUTO_REFRESH_SECONDS}">
-    """,
-    unsafe_allow_html=True,
-)
-
 st.title("🔥 DeepTrend")
 st.caption("AI Quant Trading Radar")
 
-with st.container(border=True):
-    st.markdown("## 📡 市場方向觀察")
-    st.caption("大盤訊號僅供參考，不納入個股評分")
-
-    preview_df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
-    markets = [
-        get_twse_realtime_signal("tse_t00.tw", "t00", "加權指數"),
-        get_twse_realtime_signal("tse_0050.tw", "0050", "0050 ETF"),
-        get_txff_signal("台指近月"),
-    ]
-
-    render_market_sentiment(build_market_sentiment(markets, preview_df))
-
-    for col, market in zip(st.columns(3), markets):
-        with col:
-            render_market_card(market)
-
-df = preview_df
+df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
 
 status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
 min_score_value = int(df["技術分數"].min())
@@ -1666,6 +1322,6 @@ elif active_view == "🚀 強勢排行榜":
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧪 回測實驗室":
-    render_backtest_lab(df, markets)
+    render_backtest_lab(df)
 else:
     render_strategy_rank(df)
