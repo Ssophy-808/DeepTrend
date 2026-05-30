@@ -1291,6 +1291,14 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
     return pd.DataFrame(trades)
 
 
+def backtest_confidence(trade_count):
+    if trade_count < 10:
+        return "🔴 低信賴"
+    if trade_count < 30:
+        return "🟡 中信賴"
+    return "🟢 高信賴"
+
+
 def render_backtest_lab(df, markets):
     st.subheader("🧪 回測實驗室")
 
@@ -1339,18 +1347,47 @@ def render_backtest_lab(df, markets):
     worst_return = trades["報酬率"].min()
     avg_drawdown = trades["最大回撤"].mean()
     max_drawdown = trades["最大回撤"].min()
+    winning_returns = trades.loc[trades["報酬率"] > 0, "報酬率"]
+    losing_returns = trades.loc[trades["報酬率"] < 0, "報酬率"]
+    avg_win = winning_returns.mean() if not winning_returns.empty else 0
+    avg_loss = losing_returns.mean() if not losing_returns.empty else 0
+    profit_loss_ratio = (avg_win / abs(avg_loss)) if avg_loss < 0 else None
+    confidence = backtest_confidence(len(trades))
 
     if len(trades) < 10:
         st.warning("⚠️ 樣本數不足，僅供參考")
 
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(6)
     metric_cols[0].metric("交易次數", len(trades))
     metric_cols[1].metric("勝率", f"{win_rate:.1f}%")
     metric_cols[2].metric("平均報酬", f"{avg_return:+.2f}%")
     metric_cols[3].metric("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%")
     metric_cols[4].metric("最大回撤", f"{max_drawdown:.2f}%")
+    metric_cols[5].metric("信賴度", confidence)
 
     st.caption(f"平均回撤：{avg_drawdown:.2f}%")
+
+    ratio_text = "無虧損樣本" if profit_loss_ratio is None else f"{profit_loss_ratio:.2f}"
+    st.markdown(
+        f"""
+        <div style="
+            padding:14px 16px;
+            border:1px solid #2f3542;
+            border-radius:8px;
+            background:#111827;
+            margin:10px 0 16px 0;
+            color:#d1d5db;
+            font-size:15px;
+        ">
+            平均獲利 <b style="color:#ff4b4b;">{avg_win:+.2f}%</b>
+            ｜
+            平均虧損 <b style="color:#22c55e;">{avg_loss:+.2f}%</b>
+            ｜
+            盈虧比 <b style="color:#ffffff;">{ratio_text}</b>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     display_trades = trades.copy()
     for col in ["進場日", "出場日"]:
@@ -1370,6 +1407,8 @@ def render_backtest_lab(df, markets):
         - 回測期間：{period_label}，資料來源為官方日 K。
         - 最大回撤：進場到出場期間，從當段最高收盤價往下跌的最大幅度；數值越負，代表持有過程越容易被洗掉。
         - 樣本數提醒：交易次數少於 10 筆時，勝率與平均報酬容易失真，僅供參考。
+        - 信賴度：交易次數少於 10 筆為低信賴，10 到 29 筆為中信賴，30 筆以上為高信賴。
+        - 盈虧比：平均獲利 ÷ 平均虧損絕對值；數值越高，代表單次賺錢時能覆蓋更多虧損。
         - 報酬率未扣除手續費、交易稅、滑價與股利影響。
         - `台指偏多` 和 `外資3日` 是目前盤勢條件提示，不會改寫歷史交易紀錄。
         """
