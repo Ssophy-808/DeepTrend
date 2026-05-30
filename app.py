@@ -1299,6 +1299,43 @@ def backtest_confidence(trade_count):
     return "🟢 高信賴"
 
 
+@st.cache_data(ttl=900)
+def build_strategy_rank(stock_records, month_count, holding_days):
+    rows = []
+
+    for ticker, name in stock_records:
+        ticker = str(ticker)
+        name = str(name)
+        history = get_official_daily_history(ticker, month_count=month_count)
+        trades = run_ma_backtest(history, holding_days=holding_days, volume_multiplier=1.5)
+
+        if trades.empty:
+            continue
+
+        trade_count = len(trades)
+        win_rate = (trades["報酬率"] > 0).mean() * 100
+        avg_return = trades["報酬率"].mean()
+        max_drawdown = trades["最大回撤"].min()
+
+        rows.append(
+            {
+                "股票": name,
+                "代號": ticker,
+                "交易數": trade_count,
+                "勝率": win_rate,
+                "平均報酬": avg_return,
+                "最大回撤": max_drawdown,
+                "信賴度": backtest_confidence(trade_count),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    rank_df = pd.DataFrame(rows)
+    return rank_df.sort_values(["平均報酬", "勝率", "交易數"], ascending=[False, False, False])
+
+
 def render_backtest_lab(df, markets):
     st.subheader("🧪 回測實驗室")
 
@@ -1326,6 +1363,29 @@ def render_backtest_lab(df, markets):
     selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
     symbol = normalize_tw_symbol(selected_stock)
     month_count = 12 if period_label == "1年" else 6
+
+    stock_records = tuple(
+        (str(row["股票代號"]), str(row["股票名稱"]))
+        for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
+    )
+
+    with st.spinner("正在計算策略排行榜..."):
+        rank_df = build_strategy_rank(stock_records, month_count, holding_days)
+
+    if not rank_df.empty:
+        st.markdown("### 🏆 策略排行榜")
+        rank_display = rank_df.head(10).copy()
+        rank_display["勝率"] = rank_display["勝率"].map(lambda value: f"{value:.1f}%")
+        rank_display["平均報酬"] = rank_display["平均報酬"].map(format_signed_pct)
+        rank_display["最大回撤"] = rank_display["最大回撤"].map(format_signed_pct)
+        st.dataframe(
+            rank_display[["股票", "代號", "交易數", "勝率", "平均報酬", "最大回撤", "信賴度"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("目前沒有股票符合這組策略條件，策略排行榜暫無資料。")
+
     history = get_official_daily_history(symbol, month_count=month_count)
     market_is_bullish = len(markets) > 2 and markets[2].get("漲跌", 0) > 0
     foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
