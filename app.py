@@ -1271,6 +1271,11 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
         if not entry_price:
             continue
 
+        holding_window = test_df.loc[index:exit_index, "收盤價"].dropna()
+        running_peak = holding_window.cummax()
+        drawdown = (holding_window - running_peak) / running_peak * 100
+        max_drawdown = float(drawdown.min()) if not drawdown.empty else 0
+
         trades.append(
             {
                 "進場日": row["日期"],
@@ -1279,6 +1284,7 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
                 "出場日": test_df.loc[exit_index, "日期"],
                 "出場價": exit_price,
                 "報酬率": round((exit_price - entry_price) / entry_price * 100, 2),
+                "最大回撤": round(max_drawdown, 2),
             }
         )
 
@@ -1331,19 +1337,28 @@ def render_backtest_lab(df, markets):
     avg_return = trades["報酬率"].mean()
     best_return = trades["報酬率"].max()
     worst_return = trades["報酬率"].min()
+    avg_drawdown = trades["最大回撤"].mean()
+    max_drawdown = trades["最大回撤"].min()
 
-    metric_cols = st.columns(4)
+    if len(trades) < 10:
+        st.warning("⚠️ 樣本數不足，僅供參考")
+
+    metric_cols = st.columns(5)
     metric_cols[0].metric("交易次數", len(trades))
     metric_cols[1].metric("勝率", f"{win_rate:.1f}%")
     metric_cols[2].metric("平均報酬", f"{avg_return:+.2f}%")
     metric_cols[3].metric("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%")
+    metric_cols[4].metric("最大回撤", f"{max_drawdown:.2f}%")
+
+    st.caption(f"平均回撤：{avg_drawdown:.2f}%")
 
     display_trades = trades.copy()
     for col in ["進場日", "出場日"]:
         display_trades[col] = pd.to_datetime(display_trades[col]).dt.strftime("%Y-%m-%d")
     for col in ["進場價", "出場價", "成交量倍率"]:
         display_trades[col] = display_trades[col].map(lambda value: format_number(value, 2))
-    display_trades["報酬率"] = display_trades["報酬率"].map(format_signed_pct)
+    for col in ["報酬率", "最大回撤"]:
+        display_trades[col] = display_trades[col].map(format_signed_pct)
 
     st.dataframe(display_trades, use_container_width=True, hide_index=True)
 
@@ -1353,6 +1368,8 @@ def render_backtest_lab(df, markets):
         - 進場條件：5MA 由下往上突破 20MA，且當日成交量大於 5日均量的 1.5 倍。
         - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
         - 回測期間：{period_label}，資料來源為官方日 K。
+        - 最大回撤：進場到出場期間，從當段最高收盤價往下跌的最大幅度；數值越負，代表持有過程越容易被洗掉。
+        - 樣本數提醒：交易次數少於 10 筆時，勝率與平均報酬容易失真，僅供參考。
         - 報酬率未扣除手續費、交易稅、滑價與股利影響。
         - `台指偏多` 和 `外資3日` 是目前盤勢條件提示，不會改寫歷史交易紀錄。
         """
