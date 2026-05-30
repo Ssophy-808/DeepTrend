@@ -632,6 +632,17 @@ def stock_code_key(value):
     return str(value).strip().split(".")[0]
 
 
+def build_stock_label_map(df):
+    if df.empty:
+        return {}
+
+    label_df = df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"], keep="first")
+    return {
+        str(row["股票代號"]): f"{row['股票代號']} {row['股票名稱']}"
+        for _, row in label_df.iterrows()
+    }
+
+
 @st.cache_data(ttl=600)
 def load_group_data():
     if not GROUP_FILE.exists():
@@ -1173,6 +1184,7 @@ def render_detail(filtered_df):
     selected_stock = st.selectbox(
         "選擇股票查看K線",
         stock_options,
+        format_func=build_stock_label_map(filtered_df).get,
         key="detail_stock",
     )
     st.session_state["selected_detail_stock"] = selected_stock
@@ -1274,8 +1286,15 @@ def render_backtest_lab(df, markets):
         return
 
     col1, col2, col3 = st.columns([1.5, 1, 1])
+    stock_options = df["股票代號"].astype(str).tolist()
+    stock_label_map = build_stock_label_map(df)
     with col1:
-        selected_stock = st.selectbox("回測股票", df["股票代號"].astype(str), key="backtest_stock")
+        selected_stock = st.selectbox(
+            "回測股票",
+            stock_options,
+            format_func=stock_label_map.get,
+            key="backtest_stock",
+        )
     with col2:
         holding_days = st.selectbox("持有天數", [5, 10, 20], index=0)
     with col3:
