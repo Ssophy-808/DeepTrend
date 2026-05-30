@@ -239,7 +239,7 @@ def build_twse_channel(ticker):
 
 
 @st.cache_data(ttl=300)
-def get_official_daily_history(ticker):
+def get_official_daily_history(ticker, month_count=3):
     text = str(ticker).strip()
     code = text.split(".")[0]
 
@@ -249,7 +249,7 @@ def get_official_daily_history(ticker):
     rows = []
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    for month_start in recent_month_starts(3):
+    for month_start in recent_month_starts(month_count):
         try:
             if text.endswith(".TWO"):
                 response = requests.get(
@@ -310,7 +310,7 @@ def get_official_daily_history(ticker):
     history = pd.DataFrame(rows)
     history = history.dropna(subset=["日期"])
     history = history.sort_values("日期").drop_duplicates(subset=["日期"], keep="last")
-    return history.tail(60).reset_index(drop=True)
+    return history.tail(month_count * 24).reset_index(drop=True)
 
 
 def official_history_to_kline(history):
@@ -1242,17 +1242,23 @@ def render_detail(filtered_df):
     render_k_chart(k_df)
 
 
-def run_ma_backtest(history, holding_days=5):
+def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
     if history.empty or len(history) < 30:
         return pd.DataFrame()
 
     test_df = history.copy().sort_values("日期").reset_index(drop=True)
     test_df["收盤價"] = pd.to_numeric(test_df["收盤價"], errors="coerce")
+    test_df["成交量"] = pd.to_numeric(test_df["成交量"], errors="coerce")
     test_df["MA5"] = test_df["收盤價"].rolling(5).mean()
     test_df["MA20"] = test_df["收盤價"].rolling(20).mean()
+    test_df["5日均量"] = test_df["成交量"].rolling(5).mean()
     test_df["prev_MA5"] = test_df["MA5"].shift(1)
     test_df["prev_MA20"] = test_df["MA20"].shift(1)
-    test_df["signal"] = (test_df["prev_MA5"] <= test_df["prev_MA20"]) & (test_df["MA5"] > test_df["MA20"])
+    test_df["signal"] = (
+        (test_df["prev_MA5"] <= test_df["prev_MA20"])
+        & (test_df["MA5"] > test_df["MA20"])
+        & (test_df["成交量"] > test_df["5日均量"] * volume_multiplier)
+    )
 
     trades = []
     for index, row in test_df[test_df["signal"]].iterrows():
@@ -1269,6 +1275,7 @@ def run_ma_backtest(history, holding_days=5):
             {
                 "進場日": row["日期"],
                 "進場價": entry_price,
+                "成交量倍率": round(float(row["成交量"] / row["5日均量"]), 2) if row["5日均量"] else 0,
                 "出場日": test_df.loc[exit_index, "日期"],
                 "出場價": exit_price,
                 "報酬率": round((exit_price - entry_price) / entry_price * 100, 2),
@@ -1285,7 +1292,7 @@ def render_backtest_lab(df, markets):
         st.info("目前沒有股票資料可回測。")
         return
 
-    col1, col2, col3 = st.columns([1.5, 1, 1])
+    col1, col2, col3, col4 = st.columns([1.5, 1, 1, 1])
     stock_options = df["股票代號"].astype(str).tolist()
     stock_label_map = build_stock_label_map(df)
     with col1:
@@ -1296,25 +1303,28 @@ def render_backtest_lab(df, markets):
             key="backtest_stock",
         )
     with col2:
-        holding_days = st.selectbox("持有天數", [5, 10, 20], index=0)
+        period_label = st.selectbox("回測期間", ["6個月", "1年"], index=0)
     with col3:
+        holding_days = st.selectbox("持有天數", [3, 5, 10], index=1)
+    with col4:
         require_market_bullish = st.checkbox("台指偏多", value=True)
 
     selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
     symbol = normalize_tw_symbol(selected_stock)
-    history = get_official_daily_history(symbol)
+    month_count = 12 if period_label == "1年" else 6
+    history = get_official_daily_history(symbol, month_count=month_count)
     market_is_bullish = len(markets) > 2 and markets[2].get("漲跌", 0) > 0
     foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
 
     if require_market_bullish and not market_is_bullish:
         st.warning("目前台指近月不是偏多，策略條件未成立。")
 
-    trades = run_ma_backtest(history, holding_days=holding_days)
+    trades = run_ma_backtest(history, holding_days=holding_days, volume_multiplier=1.5)
     if pd.notna(foreign_3d) and foreign_3d <= 0:
         st.warning("目前外資3日未連買，籌碼條件未成立。")
 
     if trades.empty:
-        st.info("近 3 個月沒有符合 5MA 突破 20MA 的可完成交易。")
+        st.info(f"近 {period_label} 沒有符合 5MA 突破 20MA 且成交量放大的可完成交易。")
         return
 
     win_rate = (trades["報酬率"] > 0).mean() * 100
@@ -1331,11 +1341,22 @@ def render_backtest_lab(df, markets):
     display_trades = trades.copy()
     for col in ["進場日", "出場日"]:
         display_trades[col] = pd.to_datetime(display_trades[col]).dt.strftime("%Y-%m-%d")
-    for col in ["進場價", "出場價"]:
+    for col in ["進場價", "出場價", "成交量倍率"]:
         display_trades[col] = display_trades[col].map(lambda value: format_number(value, 2))
     display_trades["報酬率"] = display_trades["報酬率"].map(format_signed_pct)
 
     st.dataframe(display_trades, use_container_width=True, hide_index=True)
+
+    st.markdown("### 回測說明")
+    st.markdown(
+        f"""
+        - 進場條件：5MA 由下往上突破 20MA，且當日成交量大於 5日均量的 1.5 倍。
+        - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
+        - 回測期間：{period_label}，資料來源為官方日 K。
+        - 報酬率未扣除手續費、交易稅、滑價與股利影響。
+        - `台指偏多` 和 `外資3日` 是目前盤勢條件提示，不會改寫歷史交易紀錄。
+        """
+    )
 
 
 def render_k_chart(k_df):
