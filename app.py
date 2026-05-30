@@ -16,6 +16,7 @@ from plotly.subplots import make_subplots
 
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
+GROUP_FILE = BASE_DIR / "groups.csv"
 AUTO_REFRESH_SECONDS = 180
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -598,6 +599,105 @@ def value_color(value):
     return "#aaaaaa"
 
 
+def stock_code_key(value):
+    return str(value).strip().split(".")[0]
+
+
+@st.cache_data(ttl=600)
+def load_group_data():
+    if not GROUP_FILE.exists():
+        return pd.DataFrame(columns=["股票代號", "族群", "股票代號_key"])
+
+    group_df = pd.read_csv(GROUP_FILE)
+    group_df = group_df.rename(columns={"ticker": "股票代號", "group": "族群"})
+    group_df["股票代號"] = group_df["股票代號"].astype(str)
+    group_df["股票代號_key"] = group_df["股票代號"].map(stock_code_key)
+    group_df["族群"] = group_df["族群"].astype(str).str.strip()
+    return group_df[group_df["族群"].str.len() > 0]
+
+
+def group_heat_status(heat_score, bullish_ratio, member_count):
+    if member_count >= 2 and bullish_ratio >= 0.8 and heat_score >= 75:
+        return "🔥 全面轉強"
+    if bullish_ratio >= 0.55 and heat_score >= 55:
+        return "🟢 轉強"
+    if heat_score >= 35:
+        return "👀 觀察"
+    return "⚠️ 轉弱"
+
+
+def build_group_heat(df):
+    group_df = load_group_data()
+    if group_df.empty or df.empty:
+        return pd.DataFrame()
+
+    stock_df = df.copy()
+    stock_df["股票代號_key"] = stock_df["股票代號"].astype(str).map(stock_code_key)
+    merged = group_df.merge(stock_df, on="股票代號_key", how="inner", suffixes=("_group", ""))
+
+    if merged.empty:
+        return pd.DataFrame()
+
+    numeric_columns = ["技術分數", "今日漲跌幅", "乖離率", "外資5日", "投信5日", "籌碼5日"]
+    for col in numeric_columns:
+        if col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0)
+
+    rows = []
+    for group_name, group_rows in merged.groupby("族群"):
+        member_count = len(group_rows)
+        bullish_mask = group_rows["技術分數"] >= 50
+        strong_mask = group_rows["技術分數"] >= 70
+        bullish_count = int(bullish_mask.sum())
+        strong_count = int(strong_mask.sum())
+        bullish_ratio = bullish_count / member_count if member_count else 0
+        avg_score = float(group_rows["技術分數"].mean())
+        avg_change = float(group_rows["今日漲跌幅"].mean())
+        avg_bias = float(group_rows["乖離率"].mean())
+        chip_5d = float(group_rows["籌碼5日"].sum()) if "籌碼5日" in group_rows.columns else 0
+        foreign_5d = float(group_rows["外資5日"].sum()) if "外資5日" in group_rows.columns else 0
+        investment_5d = float(group_rows["投信5日"].sum()) if "投信5日" in group_rows.columns else 0
+
+        heat_score = avg_score
+        heat_score += max(min(avg_change * 5, 15), -15)
+        heat_score += bullish_ratio * 20
+        if chip_5d > 0:
+            heat_score += 8
+        elif chip_5d < 0:
+            heat_score -= 8
+        if foreign_5d > 0 and investment_5d > 0:
+            heat_score += 8
+        elif foreign_5d < 0 and investment_5d < 0:
+            heat_score -= 8
+
+        top_members = group_rows.sort_values("技術分數", ascending=False).head(4)
+        leader_text = "、".join(
+            f"{row['股票名稱']}({format_number(row['技術分數'], 0)})"
+            for _, row in top_members.iterrows()
+        )
+
+        rows.append(
+            {
+                "族群": group_name,
+                "熱度分數": round(heat_score, 1),
+                "狀態": group_heat_status(heat_score, bullish_ratio, member_count),
+                "檔數": member_count,
+                "偏多檔數": bullish_count,
+                "強勢檔數": strong_count,
+                "偏多比例": bullish_ratio,
+                "平均技術分數": round(avg_score, 1),
+                "今日漲跌幅": round(avg_change, 2),
+                "平均乖離率": round(avg_bias, 2),
+                "法人5日": chip_5d,
+                "外資5日": foreign_5d,
+                "投信5日": investment_5d,
+                "領先股": leader_text,
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["熱度分數", "偏多比例"], ascending=False)
+
+
 def load_stock_result():
     try:
         return pd.read_excel(RESULT_FILE)
@@ -732,6 +832,53 @@ def render_rank(top_strength):
             """
         ).replace("\n", "")
         st.markdown(html, unsafe_allow_html=True)
+
+
+def render_group_heat(df):
+    st.subheader("🔥 族群熱度")
+
+    heat_df = build_group_heat(df)
+    if heat_df.empty:
+        st.info("目前沒有族群資料可顯示。")
+        return
+
+    top_cols = st.columns(3)
+    for index, (_, row) in enumerate(heat_df.head(3).iterrows()):
+        change_color = value_color(row["今日漲跌幅"])
+        chip_color = value_color(row["法人5日"])
+        with top_cols[index]:
+            html = dedent(
+                f"""
+                <div style="
+                    min-height:190px;
+                    padding:18px;
+                    border:1px solid #2f3542;
+                    border-radius:8px;
+                    background:#111827;
+                ">
+                    <div style="font-size:24px;font-weight:800;color:#ffffff;">{row["族群"]}</div>
+                    <div style="margin-top:8px;font-size:15px;color:#d1d5db;">{row["狀態"]}</div>
+                    <div style="margin-top:16px;font-size:34px;font-weight:900;color:#ffffff;">{format_number(row["熱度分數"], 1)}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+                        <div style="font-size:13px;color:#9ca3af;">偏多 <b style="color:#ffffff;">{row["偏多檔數"]}/{row["檔數"]}</b></div>
+                        <div style="font-size:13px;color:#9ca3af;">今日 <b style="color:{change_color};">{format_signed_pct(row["今日漲跌幅"])}</b></div>
+                        <div style="font-size:13px;color:#9ca3af;">法人5日 <b style="color:{chip_color};">{format_integer(row["法人5日"])}</b></div>
+                        <div style="font-size:13px;color:#9ca3af;">強勢 <b style="color:#ffffff;">{row["強勢檔數"]}</b></div>
+                    </div>
+                    <div style="margin-top:14px;color:#9ca3af;font-size:13px;line-height:1.45;">{row["領先股"]}</div>
+                </div>
+                """
+            ).replace("\n", "")
+            st.markdown(html, unsafe_allow_html=True)
+
+    table_df = heat_df.copy()
+    table_df["偏多比例"] = table_df["偏多比例"].map(lambda value: f"{value:.0%}")
+    for col in ["熱度分數", "平均技術分數", "今日漲跌幅", "平均乖離率"]:
+        table_df[col] = table_df[col].map(lambda value: format_number(value, 2))
+    for col in ["法人5日", "外資5日", "投信5日"]:
+        table_df[col] = table_df[col].map(format_integer)
+
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
 
 
 def open_stock_detail(stock_code):
@@ -1114,7 +1261,7 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-view_options = ["📊 股票雷達", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"]
+view_options = ["📊 股票雷達", "🔥 族群熱度", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢"]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
 
@@ -1128,6 +1275,8 @@ active_view = st.radio(
 
 if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
+elif active_view == "🔥 族群熱度":
+    render_group_heat(df)
 elif active_view == "📋 詳細表格":
     render_scan_table(filtered_df)
 elif active_view == "🚀 強勢排行榜":
