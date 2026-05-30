@@ -980,6 +980,43 @@ def backtest_confidence(trade_count):
     return "🟢 高信賴"
 
 
+def summarize_backtest_trades(trades):
+    if trades.empty:
+        return {
+            "交易次數": 0,
+            "勝率": 0,
+            "平均報酬": 0,
+            "最佳報酬": 0,
+            "最差報酬": 0,
+            "平均回撤": 0,
+            "最大回撤": 0,
+            "平均獲利": 0,
+            "平均虧損": 0,
+            "盈虧比": None,
+            "信賴度": backtest_confidence(0),
+        }
+
+    trade_count = len(trades)
+    winning_returns = trades.loc[trades["報酬率"] > 0, "報酬率"]
+    losing_returns = trades.loc[trades["報酬率"] < 0, "報酬率"]
+    avg_win = winning_returns.mean() if not winning_returns.empty else 0
+    avg_loss = losing_returns.mean() if not losing_returns.empty else 0
+
+    return {
+        "交易次數": trade_count,
+        "勝率": (trades["報酬率"] > 0).mean() * 100,
+        "平均報酬": trades["報酬率"].mean(),
+        "最佳報酬": trades["報酬率"].max(),
+        "最差報酬": trades["報酬率"].min(),
+        "平均回撤": trades["最大回撤"].mean(),
+        "最大回撤": trades["最大回撤"].min(),
+        "平均獲利": avg_win,
+        "平均虧損": avg_loss,
+        "盈虧比": (avg_win / abs(avg_loss)) if avg_loss < 0 else None,
+        "信賴度": backtest_confidence(trade_count),
+    }
+
+
 @st.cache_data(ttl=900)
 def build_strategy_rank(stock_records, month_count, holding_days):
     rows = []
@@ -993,20 +1030,17 @@ def build_strategy_rank(stock_records, month_count, holding_days):
         if trades.empty:
             continue
 
-        trade_count = len(trades)
-        win_rate = (trades["報酬率"] > 0).mean() * 100
-        avg_return = trades["報酬率"].mean()
-        max_drawdown = trades["最大回撤"].min()
+        summary = summarize_backtest_trades(trades)
 
         rows.append(
             {
                 "股票": name,
                 "代號": ticker,
-                "交易數": trade_count,
-                "勝率": win_rate,
-                "平均報酬": avg_return,
-                "最大回撤": max_drawdown,
-                "信賴度": backtest_confidence(trade_count),
+                "交易數": summary["交易次數"],
+                "勝率": summary["勝率"],
+                "平均報酬": summary["平均報酬"],
+                "最大回撤": summary["最大回撤"],
+                "信賴度": summary["信賴度"],
             }
         )
 
@@ -1091,22 +1125,49 @@ def render_backtest_lab(df):
     if pd.notna(foreign_3d) and foreign_3d <= 0:
         st.warning("目前外資3日未連買，籌碼條件未成立。")
 
+    comparison_rows = []
+    for compare_days in [3, 5, 10, 20]:
+        compare_trades = run_ma_backtest(history, holding_days=compare_days, volume_multiplier=1.5)
+        summary = summarize_backtest_trades(compare_trades)
+        comparison_rows.append(
+            {
+                "持有天數": f"{compare_days}天",
+                "交易次數": summary["交易次數"],
+                "勝率": summary["勝率"],
+                "平均報酬": summary["平均報酬"],
+                "最大回撤": summary["最大回撤"],
+                "盈虧比": summary["盈虧比"],
+                "信賴度": summary["信賴度"],
+            }
+        )
+
+    comparison_df = pd.DataFrame(comparison_rows)
+    display_comparison = comparison_df.copy()
+    display_comparison["勝率"] = display_comparison["勝率"].map(lambda value: f"{value:.1f}%")
+    for col in ["平均報酬", "最大回撤"]:
+        display_comparison[col] = display_comparison[col].map(format_signed_pct)
+    display_comparison["盈虧比"] = display_comparison["盈虧比"].map(
+        lambda value: "無虧損樣本" if pd.isna(value) else f"{value:.2f}"
+    )
+
+    st.markdown("### 持有天數比較")
+    st.dataframe(display_comparison, use_container_width=True, hide_index=True)
+
     if trades.empty:
         st.info(f"近 {period_label} 沒有符合 5MA 突破 20MA 且成交量放大的可完成交易。")
         return
 
-    win_rate = (trades["報酬率"] > 0).mean() * 100
-    avg_return = trades["報酬率"].mean()
-    best_return = trades["報酬率"].max()
-    worst_return = trades["報酬率"].min()
-    avg_drawdown = trades["最大回撤"].mean()
-    max_drawdown = trades["最大回撤"].min()
-    winning_returns = trades.loc[trades["報酬率"] > 0, "報酬率"]
-    losing_returns = trades.loc[trades["報酬率"] < 0, "報酬率"]
-    avg_win = winning_returns.mean() if not winning_returns.empty else 0
-    avg_loss = losing_returns.mean() if not losing_returns.empty else 0
-    profit_loss_ratio = (avg_win / abs(avg_loss)) if avg_loss < 0 else None
-    confidence = backtest_confidence(len(trades))
+    summary = summarize_backtest_trades(trades)
+    win_rate = summary["勝率"]
+    avg_return = summary["平均報酬"]
+    best_return = summary["最佳報酬"]
+    worst_return = summary["最差報酬"]
+    avg_drawdown = summary["平均回撤"]
+    max_drawdown = summary["最大回撤"]
+    avg_win = summary["平均獲利"]
+    avg_loss = summary["平均虧損"]
+    profit_loss_ratio = summary["盈虧比"]
+    confidence = summary["信賴度"]
 
     if len(trades) < 10:
         st.warning("⚠️ 樣本數不足，僅供參考")
