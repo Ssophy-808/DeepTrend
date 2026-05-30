@@ -1336,6 +1336,43 @@ def build_strategy_rank(stock_records, month_count, holding_days):
     return rank_df.sort_values(["平均報酬", "勝率", "交易數"], ascending=[False, False, False])
 
 
+def render_strategy_rank(df):
+    st.subheader("🏆 策略排行榜")
+
+    if df.empty:
+        st.info("目前沒有股票資料可排行。")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        period_label = st.selectbox("回測期間", ["6個月", "1年"], index=0, key="strategy_rank_period")
+    with col2:
+        holding_days = st.selectbox("持有天數", [3, 5, 10], index=1, key="strategy_rank_holding_days")
+
+    month_count = 12 if period_label == "1年" else 6
+    stock_records = tuple(
+        (str(row["股票代號"]), str(row["股票名稱"]))
+        for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
+    )
+
+    with st.spinner("正在計算策略排行榜..."):
+        rank_df = build_strategy_rank(stock_records, month_count, holding_days)
+
+    if rank_df.empty:
+        st.info("目前沒有股票符合這組策略條件，策略排行榜暫無資料。")
+        return
+
+    rank_display = rank_df.head(20).copy()
+    rank_display["勝率"] = rank_display["勝率"].map(lambda value: f"{value:.1f}%")
+    rank_display["平均報酬"] = rank_display["平均報酬"].map(format_signed_pct)
+    rank_display["最大回撤"] = rank_display["最大回撤"].map(format_signed_pct)
+    st.dataframe(
+        rank_display[["股票", "代號", "交易數", "勝率", "平均報酬", "最大回撤", "信賴度"]],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_backtest_lab(df, markets):
     st.subheader("🧪 回測實驗室")
 
@@ -1363,29 +1400,6 @@ def render_backtest_lab(df, markets):
     selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
     symbol = normalize_tw_symbol(selected_stock)
     month_count = 12 if period_label == "1年" else 6
-
-    stock_records = tuple(
-        (str(row["股票代號"]), str(row["股票名稱"]))
-        for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
-    )
-
-    with st.spinner("正在計算策略排行榜..."):
-        rank_df = build_strategy_rank(stock_records, month_count, holding_days)
-
-    if not rank_df.empty:
-        st.markdown("### 🏆 策略排行榜")
-        rank_display = rank_df.head(10).copy()
-        rank_display["勝率"] = rank_display["勝率"].map(lambda value: f"{value:.1f}%")
-        rank_display["平均報酬"] = rank_display["平均報酬"].map(format_signed_pct)
-        rank_display["最大回撤"] = rank_display["最大回撤"].map(format_signed_pct)
-        st.dataframe(
-            rank_display[["股票", "代號", "交易數", "勝率", "平均報酬", "最大回撤", "信賴度"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("目前沒有股票符合這組策略條件，策略排行榜暫無資料。")
-
     history = get_official_daily_history(symbol, month_count=month_count)
     market_is_bullish = len(markets) > 2 and markets[2].get("漲跌", 0) > 0
     foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
@@ -1621,7 +1635,15 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
-view_options = ["📊 股票雷達", "🔥 族群熱度", "📋 詳細表格", "🚀 強勢排行榜", "🔎 個股查詢", "🧪 回測實驗室"]
+view_options = [
+    "📊 股票雷達",
+    "🔥 族群熱度",
+    "📋 詳細表格",
+    "🚀 強勢排行榜",
+    "🔎 個股查詢",
+    "🧪 回測實驗室",
+    "🏆 策略排行榜",
+]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
 
@@ -1643,5 +1665,7 @@ elif active_view == "🚀 強勢排行榜":
     render_rank(top_strength)
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
-else:
+elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df, markets)
+else:
+    render_strategy_rank(df)
