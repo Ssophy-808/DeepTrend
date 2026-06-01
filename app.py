@@ -929,16 +929,25 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
 
     test_df = history.copy().sort_values("日期").reset_index(drop=True)
     test_df["收盤價"] = pd.to_numeric(test_df["收盤價"], errors="coerce")
+    test_df["最高價"] = pd.to_numeric(test_df["最高價"], errors="coerce")
+    test_df["最低價"] = pd.to_numeric(test_df["最低價"], errors="coerce")
     test_df["成交量"] = pd.to_numeric(test_df["成交量"], errors="coerce")
     test_df["MA5"] = test_df["收盤價"].rolling(5).mean()
-    test_df["MA20"] = test_df["收盤價"].rolling(20).mean()
+    test_df["MA10"] = test_df["收盤價"].rolling(10).mean()
     test_df["5日均量"] = test_df["成交量"].rolling(5).mean()
-    test_df["prev_MA5"] = test_df["MA5"].shift(1)
-    test_df["prev_MA20"] = test_df["MA20"].shift(1)
+    low_9 = test_df["最低價"].rolling(9).min()
+    high_9 = test_df["最高價"].rolling(9).max()
+    price_range = high_9 - low_9
+    test_df["RSV"] = ((test_df["收盤價"] - low_9) / price_range.replace(0, pd.NA) * 100).fillna(50)
+    test_df["K值"] = test_df["RSV"].ewm(alpha=1 / 3, adjust=False).mean()
+    test_df["D值"] = test_df["K值"].ewm(alpha=1 / 3, adjust=False).mean()
+    test_df["prev_K值"] = test_df["K值"].shift(1)
+    test_df["prev_D值"] = test_df["D值"].shift(1)
     test_df["signal"] = (
-        (test_df["prev_MA5"] <= test_df["prev_MA20"])
-        & (test_df["MA5"] > test_df["MA20"])
+        (test_df["MA5"] > test_df["MA10"])
         & (test_df["成交量"] > test_df["5日均量"] * volume_multiplier)
+        & (test_df["prev_K值"] <= test_df["prev_D值"])
+        & (test_df["K值"] > test_df["D值"])
     )
 
     trades = []
@@ -962,6 +971,8 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
                 "進場日": row["日期"],
                 "進場價": entry_price,
                 "成交量倍率": round(float(row["成交量"] / row["5日均量"]), 2) if row["5日均量"] else 0,
+                "K值": round(float(row["K值"]), 2),
+                "D值": round(float(row["D值"]), 2),
                 "出場日": test_df.loc[exit_index, "日期"],
                 "出場價": exit_price,
                 "報酬率": round((exit_price - entry_price) / entry_price * 100, 2),
@@ -1154,7 +1165,7 @@ def render_backtest_lab(df):
     st.dataframe(display_comparison, use_container_width=True, hide_index=True)
 
     if trades.empty:
-        st.info(f"近 {period_label} 沒有符合 5MA 突破 20MA 且成交量放大的可完成交易。")
+        st.info(f"近 {period_label} 沒有符合 5MA > 10MA、量能 1.5 倍、KD 黃金交叉的可完成交易。")
         return
 
     summary = summarize_backtest_trades(trades)
@@ -1207,7 +1218,7 @@ def render_backtest_lab(df):
     display_trades = trades.copy()
     for col in ["進場日", "出場日"]:
         display_trades[col] = pd.to_datetime(display_trades[col]).dt.strftime("%Y-%m-%d")
-    for col in ["進場價", "出場價", "成交量倍率"]:
+    for col in ["進場價", "出場價", "成交量倍率", "K值", "D值"]:
         display_trades[col] = display_trades[col].map(lambda value: format_number(value, 2))
     for col in ["報酬率", "最大回撤"]:
         display_trades[col] = display_trades[col].map(format_signed_pct)
@@ -1217,7 +1228,7 @@ def render_backtest_lab(df):
     st.markdown("### 回測說明")
     st.markdown(
         f"""
-        - 進場條件：5MA 由下往上突破 20MA，且當日成交量大於 5日均量的 1.5 倍。
+        - 進場條件：5MA 大於 10MA，且當日成交量大於 5日均量的 1.5 倍，同時 KD 出現黃金交叉。
         - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
         - 回測期間：{period_label}，資料來源為官方日 K。
         - 最大回撤：進場到出場期間，從當段最高收盤價往下跌的最大幅度；數值越負，代表持有過程越容易被洗掉。
