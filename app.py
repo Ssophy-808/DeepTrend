@@ -1107,6 +1107,71 @@ def render_strategy_rank(df):
     )
 
 
+def render_backtest_metric_grid(metrics):
+    cards = "\n".join(
+        f"""
+        <div class="backtest-metric-card">
+            <div class="backtest-metric-label">{label}</div>
+            <div class="backtest-metric-value">{value}</div>
+        </div>
+        """
+        for label, value in metrics
+    )
+    st.markdown(
+        f"""
+        <style>
+        .backtest-metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 12px 0 8px;
+        }}
+        .backtest-metric-card {{
+            min-width: 0;
+            padding: 12px 14px;
+            border: 1px solid #2f3542;
+            border-radius: 8px;
+            background: #111827;
+        }}
+        .backtest-metric-label {{
+            color: #aeb4c0;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            white-space: nowrap;
+        }}
+        .backtest-metric-value {{
+            color: #f9fafb;
+            font-size: clamp(22px, 4vw, 32px);
+            font-weight: 800;
+            line-height: 1.15;
+            overflow-wrap: anywhere;
+        }}
+        @media (max-width: 640px) {{
+            .backtest-metric-grid {{
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }}
+            .backtest-metric-card {{
+                padding: 10px 12px;
+            }}
+            .backtest-metric-value {{
+                font-size: 22px;
+            }}
+        }}
+        @media (max-width: 360px) {{
+            .backtest-metric-grid {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+        </style>
+        <div class="backtest-metric-grid">
+            {cards}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_backtest_lab(df):
     st.subheader("🧪 回測實驗室")
 
@@ -1202,13 +1267,16 @@ def render_backtest_lab(df):
     if len(trades) < 10:
         st.warning("⚠️ 樣本數不足，僅供參考")
 
-    metric_cols = st.columns(6)
-    metric_cols[0].metric("交易次數", len(trades))
-    metric_cols[1].metric("勝率", f"{win_rate:.1f}%")
-    metric_cols[2].metric("平均報酬", f"{avg_return:+.2f}%")
-    metric_cols[3].metric("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%")
-    metric_cols[4].metric("最大回撤", f"{max_drawdown:.2f}%")
-    metric_cols[5].metric("信賴度", confidence)
+    render_backtest_metric_grid(
+        [
+            ("交易次數", len(trades)),
+            ("勝率", f"{win_rate:.1f}%"),
+            ("平均報酬", f"{avg_return:+.2f}%"),
+            ("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%"),
+            ("最大回撤", f"{max_drawdown:.2f}%"),
+            ("信賴度", confidence),
+        ]
+    )
 
     st.caption(f"平均回撤：{avg_drawdown:.2f}%")
 
