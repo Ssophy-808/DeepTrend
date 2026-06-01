@@ -1067,6 +1067,83 @@ def backtest_period_months(period_label):
     }.get(period_label, 6)
 
 
+def get_current_entry_status(history, market_is_bullish, volume_multiplier=1.5):
+    if history.empty or len(history) < 10:
+        return None
+
+    latest_df = history.copy().sort_values("日期").reset_index(drop=True)
+    latest_df["收盤價"] = pd.to_numeric(latest_df["收盤價"], errors="coerce")
+    latest_df["最高價"] = pd.to_numeric(latest_df["最高價"], errors="coerce")
+    latest_df["最低價"] = pd.to_numeric(latest_df["最低價"], errors="coerce")
+    latest_df["成交量"] = pd.to_numeric(latest_df["成交量"], errors="coerce")
+    latest_df["MA5"] = latest_df["收盤價"].rolling(5).mean()
+    latest_df["MA10"] = latest_df["收盤價"].rolling(10).mean()
+    latest_df["5日均量"] = latest_df["成交量"].rolling(5).mean()
+    low_9 = latest_df["最低價"].rolling(9).min()
+    high_9 = latest_df["最高價"].rolling(9).max()
+    price_range = high_9 - low_9
+    latest_df["RSV"] = ((latest_df["收盤價"] - low_9) / price_range.replace(0, pd.NA) * 100).fillna(50)
+    latest_df["K值"] = latest_df["RSV"].ewm(alpha=1 / 3, adjust=False).mean()
+    latest_df["D值"] = latest_df["K值"].ewm(alpha=1 / 3, adjust=False).mean()
+    latest_df["prev_K值"] = latest_df["K值"].shift(1)
+    latest_df["prev_D值"] = latest_df["D值"].shift(1)
+
+    latest = latest_df.iloc[-1]
+    volume_ratio = latest["成交量"] / latest["5日均量"] if latest["5日均量"] else 0
+    ma_ok = bool(latest["MA5"] > latest["MA10"])
+    volume_ok = bool(volume_ratio >= volume_multiplier)
+    kd_ok = bool(latest["prev_K值"] <= latest["prev_D值"] and latest["K值"] > latest["D值"])
+
+    return {
+        "ma_ok": ma_ok,
+        "volume_ok": volume_ok,
+        "kd_ok": kd_ok,
+        "market_ok": bool(market_is_bullish),
+        "volume_ratio": volume_ratio,
+    }
+
+
+def render_entry_status_card(stock_name, status):
+    if not status:
+        st.info("目前日 K 資料不足，無法判斷是否接近歷史進場條件。")
+        return
+
+    rows = [
+        ("量能達標" if status["volume_ok"] else "成交量不足", status["volume_ok"]),
+        ("MA突破", status["ma_ok"]),
+        ("KD黃金交叉", status["kd_ok"]),
+        ("台指偏多", status["market_ok"]),
+    ]
+    checklist = "<br>".join(f"{'☑' if is_ok else '☐'} {label}" for label, is_ok in rows)
+    matched_count = sum(is_ok for _, is_ok in rows)
+
+    st.markdown(
+        f"""
+        <div style="
+            padding:16px;
+            border:1px solid #2f3542;
+            border-radius:8px;
+            background:#111827;
+            margin:12px 0;
+            color:#d1d5db;
+        ">
+            <div style="font-size:16px;font-weight:800;color:#ffffff;margin-bottom:8px;">
+                目前是否接近歷史最佳買點
+            </div>
+            <div style="font-size:15px;line-height:1.8;">
+                <b>{stock_name}</b><br>
+                目前狀態：距離歷史回測進場條件還差：<br>
+                {checklist}
+            </div>
+            <div style="margin-top:8px;color:#9ca3af;font-size:13px;">
+                已符合 {matched_count} / {len(rows)} 項，成交量目前約 {status["volume_ratio"]:.2f} 倍。
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.cache_data(ttl=900)
 def build_strategy_rank(stock_records, month_count, holding_days):
     rows = []
@@ -1239,6 +1316,9 @@ def render_backtest_lab(df):
     trades = run_ma_backtest(history, holding_days=holding_days, volume_multiplier=1.5)
     if pd.notna(foreign_3d) and foreign_3d <= 0:
         st.warning("目前外資3日未連買，籌碼條件未成立。")
+
+    current_entry_status = get_current_entry_status(history, market_is_bullish, volume_multiplier=1.5)
+    render_entry_status_card(str(selected_row["股票名稱"]), current_entry_status)
 
     comparison_rows = []
     for compare_days in [3, 5, 10, 20]:
