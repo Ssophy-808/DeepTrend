@@ -1028,6 +1028,14 @@ def summarize_backtest_trades(trades):
     }
 
 
+def backtest_period_months(period_label):
+    return {
+        "6個月": 6,
+        "1年": 12,
+        "3年": 36,
+    }.get(period_label, 6)
+
+
 @st.cache_data(ttl=900)
 def build_strategy_rank(stock_records, month_count, holding_days):
     rows = []
@@ -1071,11 +1079,11 @@ def render_strategy_rank(df):
 
     col1, col2 = st.columns(2)
     with col1:
-        period_label = st.selectbox("回測期間", ["6個月", "1年"], index=0, key="strategy_rank_period")
+        period_label = st.selectbox("回測期間", ["6個月", "1年", "3年"], index=1, key="strategy_rank_period")
     with col2:
         holding_days = st.selectbox("持有天數", [3, 5, 10], index=1, key="strategy_rank_holding_days")
 
-    month_count = 12 if period_label == "1年" else 6
+    month_count = backtest_period_months(period_label)
     stock_records = tuple(
         (str(row["股票代號"]), str(row["股票名稱"]))
         for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
@@ -1117,7 +1125,7 @@ def render_backtest_lab(df):
             key="backtest_stock",
         )
     with col2:
-        period_label = st.selectbox("回測期間", ["6個月", "1年"], index=0)
+        period_label = st.selectbox("回測期間", ["6個月", "1年", "3年"], index=1)
     with col3:
         holding_days = st.selectbox("持有天數", [3, 5, 10], index=1)
     with col4:
@@ -1125,7 +1133,7 @@ def render_backtest_lab(df):
 
     selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
     symbol = normalize_tw_symbol(selected_stock)
-    month_count = 12 if period_label == "1年" else 6
+    month_count = backtest_period_months(period_label)
     history = get_official_daily_history(symbol, month_count=month_count)
     foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
 
@@ -1159,6 +1167,17 @@ def render_backtest_lab(df):
         display_comparison[col] = display_comparison[col].map(format_signed_pct)
     display_comparison["盈虧比"] = display_comparison["盈虧比"].map(
         lambda value: "無虧損樣本" if pd.isna(value) else f"{value:.2f}"
+    )
+
+    st.markdown("### 回測說明")
+    st.markdown(
+        f"""
+        - 進場條件：5MA 大於 10MA，且當日成交量大於 5日均量的 1.5 倍，同時 KD 出現黃金交叉。
+        - KD 黃金交叉：K 值由下往上穿過 D 值。
+        - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
+        - 回測期間：{period_label}，資料來源為官方日 K。
+        - 報酬率未扣除手續費、交易稅、滑價與股利影響。
+        """
     )
 
     st.markdown("### 持有天數比較")
@@ -1225,17 +1244,13 @@ def render_backtest_lab(df):
 
     st.dataframe(display_trades, use_container_width=True, hide_index=True)
 
-    st.markdown("### 回測說明")
+    st.markdown("### 指標補充")
     st.markdown(
         f"""
-        - 進場條件：5MA 大於 10MA，且當日成交量大於 5日均量的 1.5 倍，同時 KD 出現黃金交叉。
-        - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
-        - 回測期間：{period_label}，資料來源為官方日 K。
         - 最大回撤：進場到出場期間，從當段最高收盤價往下跌的最大幅度；數值越負，代表持有過程越容易被洗掉。
         - 樣本數提醒：交易次數少於 10 筆時，勝率與平均報酬容易失真，僅供參考。
         - 信賴度：交易次數少於 10 筆為低信賴，10 到 29 筆為中信賴，30 筆以上為高信賴。
         - 盈虧比：平均獲利 ÷ 平均虧損絕對值；數值越高，代表單次賺錢時能覆蓋更多虧損。
-        - 報酬率未扣除手續費、交易稅、滑價與股利影響。
         - `台指偏多` 為手動盤勢條件，`外資3日` 為目前籌碼提示；兩者不會改寫歷史交易紀錄。
         """
     )
