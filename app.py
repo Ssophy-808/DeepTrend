@@ -1,3 +1,34 @@
+# DeepTrend app.py 功能地圖
+#
+# 1. 資料來源
+#    - output/stock_analysis_result.xlsx：主表格與股票雷達的基礎分析結果。
+#    - chip.csv：外資、投信與籌碼資料，由 update_chip.py 更新。
+#    - groups.csv：股票族群分類，用於族群熱度判斷。
+#    - 台灣證交所 / 櫃買中心官方日 K：個股 K 線、回測歷史資料與即時補價。
+#    - yfinance：部分行情資料的備援來源。
+#
+# 2. 資料處理
+#    - 讀取 Excel/CSV 後整理欄位型別、格式化數字、補上即時價格與漲跌幅。
+#    - 計算技術指標、狀態標籤、量價異常、乖離率與族群強弱。
+#    - 將股票代號標準化為 .TW / .TWO，方便不同資料源查詢。
+#
+# 3. UI 顯示
+#    - 股票雷達：以卡片呈現重點股票、狀態、分數、量價訊號與籌碼提示。
+#    - 強勢排行榜 / 策略排行榜：用排行方式快速比較股票表現與策略結果。
+#    - 股票掃描：顯示完整資料表，搭配狀態、分數、關鍵字篩選。
+#    - 個股查詢：顯示個股摘要、技術/籌碼說明與 K 線圖。
+#
+# 4. 回測功能
+#    - 回測條件：5MA > 10MA、成交量大於 5日均量 1.5 倍、KD 黃金交叉。
+#    - 支援 6個月 / 1年 / 3年期間，以及不同持有天數比較。
+#    - 統計交易次數、勝率、平均報酬、最大回撤、盈虧比與信賴度。
+#
+# 5. 主程式流程
+#    - 設定 Streamlit 頁面與標題。
+#    - 讀取並整理股票分析資料。
+#    - 顯示更新按鈕、篩選條件與主功能選單。
+#    - 依選單切換股票雷達、排行榜、掃描、個股查詢與回測實驗室。
+
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1246,6 +1277,13 @@ def render_backtest_lab(df):
     )
 
     st.markdown("### 持有天數比較")
+    valid_comparison = comparison_df[comparison_df["交易次數"] > 0]
+    if not valid_comparison.empty:
+        best_holding = valid_comparison.sort_values("平均報酬", ascending=False).iloc[0]
+        st.success(
+            f"📈 建議持有：{best_holding['持有天數']}\n\n"
+            f"（平均報酬最高 {best_holding['平均報酬']:+.2f}%）"
+        )
     st.dataframe(display_comparison, use_container_width=True, hide_index=True)
 
     if trades.empty:
