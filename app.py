@@ -1144,6 +1144,226 @@ def render_entry_status_card(stock_name, status):
     )
 
 
+def prepare_breakout_history(history):
+    if history.empty:
+        return pd.DataFrame()
+
+    prepared = history.copy().sort_values("日期").reset_index(drop=True)
+    for col in ["收盤價", "最高價", "最低價", "成交量"]:
+        prepared[col] = pd.to_numeric(prepared[col], errors="coerce")
+
+    prepared["MA5"] = prepared["收盤價"].rolling(5).mean()
+    prepared["MA10"] = prepared["收盤價"].rolling(10).mean()
+    prepared["MA20"] = prepared["收盤價"].rolling(20).mean()
+    prepared["20日均量"] = prepared["成交量"].rolling(20).mean()
+    return prepared.dropna(subset=["日期", "收盤價"]).reset_index(drop=True)
+
+
+def get_eps_value(row):
+    eps_columns = [col for col in row.index if "EPS" in str(col).upper()]
+    if not eps_columns:
+        return None
+
+    values = pd.to_numeric(row[eps_columns], errors="coerce")
+    if values.dropna().empty:
+        return None
+
+    return float(values.dropna().sum())
+
+
+def days_until_break_ma5(history, start_index, max_days=20):
+    for offset in range(1, max_days + 1):
+        check_index = start_index + offset
+        if check_index >= len(history):
+            break
+        close = history.loc[check_index, "收盤價"]
+        ma5 = history.loc[check_index, "MA5"]
+        if pd.notna(close) and pd.notna(ma5) and close < ma5:
+            return offset
+    return "20日內未跌破"
+
+
+def calc_forward_return(history, start_index, days):
+    target_index = start_index + days
+    if target_index >= len(history):
+        return None
+
+    entry_price = history.loc[start_index, "收盤價"]
+    exit_price = history.loc[target_index, "收盤價"]
+    if not entry_price or pd.isna(entry_price) or pd.isna(exit_price):
+        return None
+
+    return round((exit_price - entry_price) / entry_price * 100, 2)
+
+
+def run_breakout_backtest_for_stock(row, settings):
+    ticker = str(row["股票代號"])
+    name = str(row["股票名稱"])
+    history = get_official_daily_history(ticker, month_count=settings["month_count"])
+    history = prepare_breakout_history(history)
+
+    if history.empty or len(history) < max(settings["breakout_days"], 60, 25):
+        return []
+
+    eps_value = get_eps_value(row)
+    if settings["require_eps"] and (eps_value is None or eps_value <= 0):
+        return []
+
+    results = []
+    breakout_days = settings["breakout_days"]
+    price_min = settings["price_min"]
+    price_max = settings["price_max"]
+    volume_multiplier = settings["volume_multiplier"]
+
+    for index in range(breakout_days, len(history) - 20):
+        current = history.loc[index]
+        previous_high = history.loc[index - breakout_days : index - 1, "收盤價"].max()
+        close = current["收盤價"]
+
+        if pd.isna(close) or close <= previous_high:
+            continue
+        if close < price_min or close > price_max:
+            continue
+        if settings["require_ma_alignment"] and not (current["MA5"] > current["MA10"] > current["MA20"]):
+            continue
+        if settings["require_volume"] and not (current["成交量"] > current["20日均量"] * volume_multiplier):
+            continue
+
+        forward_20 = history.loc[index + 1 : index + 20]
+        max_rise = (forward_20["最高價"].max() - close) / close * 100 if not forward_20.empty else None
+        max_pullback = (forward_20["最低價"].min() - close) / close * 100 if not forward_20.empty else None
+
+        results.append(
+            {
+                "股票代號": ticker,
+                "股票名稱": name,
+                "觸發日期": current["日期"],
+                "觸發收盤價": round(float(close), 2),
+                "5日後報酬率": calc_forward_return(history, index, 5),
+                "10日後報酬率": calc_forward_return(history, index, 10),
+                "20日後報酬率": calc_forward_return(history, index, 20),
+                "幾天後跌破5日線": days_until_break_ma5(history, index, max_days=20),
+                "觸發後20日內最大漲幅": round(float(max_rise), 2) if pd.notna(max_rise) else None,
+                "觸發後20日內最大回檔": round(float(max_pullback), 2) if pd.notna(max_pullback) else None,
+            }
+        )
+
+    return results
+
+
+@st.cache_data(ttl=900)
+def build_breakout_backtest(stock_records, settings):
+    rows = []
+    for record in stock_records:
+        row = pd.Series({"股票代號": record[0], "股票名稱": record[1], "EPS合計": record[2]})
+        rows.extend(run_breakout_backtest_for_stock(row, settings))
+    return pd.DataFrame(rows)
+
+
+def latest_market_snapshot(row, month_count=4):
+    ticker = str(row["股票代號"])
+    name = str(row["股票名稱"])
+    history = get_official_daily_history(ticker, month_count=month_count)
+    history = prepare_breakout_history(history)
+
+    if history.empty or len(history) < 61:
+        return None
+
+    latest = history.iloc[-1]
+    prev = history.iloc[-2]
+    prev20_high = history["收盤價"].shift(1).rolling(20).max().iloc[-1]
+    prev60_high = history["收盤價"].shift(1).rolling(60).max().iloc[-1]
+    change_pct = (latest["收盤價"] - prev["收盤價"]) / prev["收盤價"] * 100 if prev["收盤價"] else 0
+
+    return {
+        "股票代號": ticker,
+        "股票名稱": name,
+        "ma_bull": bool(latest["MA5"] > latest["MA10"] > latest["MA20"]),
+        "high20": bool(latest["收盤價"] > prev20_high),
+        "high60": bool(latest["收盤價"] > prev60_high),
+        "volume_surge": bool(latest["成交量"] > latest["20日均量"] * 1.5),
+        "limit_up": bool(change_pct >= 9.5),
+        "limit_down": bool(change_pct <= -9.5),
+        "under30_turning": bool(latest["收盤價"] <= 30 and latest["MA5"] > latest["MA10"] and latest["收盤價"] > latest["MA20"]),
+    }
+
+
+def market_temperature_state(score):
+    if score < 20:
+        return "極冷"
+    if score < 40:
+        return "偏冷"
+    if score < 60:
+        return "正常"
+    if score < 80:
+        return "偏熱"
+    return "過熱"
+
+
+@st.cache_data(ttl=900)
+def build_market_temperature(stock_records):
+    snapshots = []
+    for record in stock_records:
+        snapshot = latest_market_snapshot(pd.Series({"股票代號": record[0], "股票名稱": record[1]}))
+        if snapshot:
+            snapshots.append(snapshot)
+
+    snapshot_df = pd.DataFrame(snapshots)
+    if snapshot_df.empty:
+        return {}, pd.DataFrame(), pd.DataFrame()
+
+    total = len(snapshot_df)
+    stats = {
+        "統計股票數": total,
+        "5MA > 10MA > 20MA": int(snapshot_df["ma_bull"].sum()),
+        "收盤創20日高": int(snapshot_df["high20"].sum()),
+        "收盤創60日高": int(snapshot_df["high60"].sum()),
+        "成交量大於20日均量1.5倍": int(snapshot_df["volume_surge"].sum()),
+        "漲停家數": int(snapshot_df["limit_up"].sum()),
+        "跌停家數": int(snapshot_df["limit_down"].sum()),
+        "股價30元以下且轉強": int(snapshot_df["under30_turning"].sum()),
+    }
+
+    score = (
+        stats["5MA > 10MA > 20MA"] / total * 25
+        + stats["收盤創20日高"] / total * 20
+        + stats["收盤創60日高"] / total * 20
+        + stats["成交量大於20日均量1.5倍"] / total * 15
+        + max(stats["漲停家數"] - stats["跌停家數"], 0) / total * 10
+        + stats["股價30元以下且轉強"] / total * 10
+    )
+    stats["市場溫度分數"] = round(min(max(score, 0), 100), 1)
+    stats["市場狀態"] = market_temperature_state(stats["市場溫度分數"])
+
+    group_rank = pd.DataFrame()
+    group_df = load_group_file()
+    if not group_df.empty:
+        snapshot_df["股票代號_key"] = snapshot_df["股票代號"].map(stock_code_key)
+        merged = group_df.merge(snapshot_df, on="股票代號_key", how="inner")
+        if not merged.empty:
+            group_rows = []
+            for group_name, group_rows_df in merged.groupby("族群"):
+                strong_count = int(
+                    (
+                        group_rows_df["ma_bull"]
+                        | group_rows_df["high20"]
+                        | group_rows_df["high60"]
+                        | group_rows_df["volume_surge"]
+                    ).sum()
+                )
+                group_rows.append(
+                    {
+                        "族群": group_name,
+                        "股票數": len(group_rows_df),
+                        "強勢數": strong_count,
+                        "強勢比例": strong_count / len(group_rows_df) * 100,
+                    }
+                )
+            group_rank = pd.DataFrame(group_rows).sort_values(["強勢比例", "強勢數"], ascending=False)
+
+    return stats, snapshot_df, group_rank
+
+
 @st.cache_data(ttl=900)
 def build_strategy_rank(stock_records, month_count, holding_days):
     rows = []
@@ -1287,159 +1507,143 @@ def render_backtest_lab(df):
         st.info("目前沒有股票資料可回測。")
         return
 
-    col1, col2, col3, col4 = st.columns([1.5, 1, 1, 1])
-    stock_options = df["股票代號"].astype(str).tolist()
-    stock_label_map = build_stock_label_map(df)
+    st.caption("依條件掃描目前清單股票的歷史觸發點，並統計觸發後 5 / 10 / 20 日表現。")
+
+    col1, col2, col3 = st.columns(3)
     with col1:
-        selected_stock = st.selectbox(
-            "回測股票",
-            stock_options,
-            format_func=stock_label_map.get,
-            key="backtest_stock",
-        )
+        period_label = st.selectbox("回測期間", ["1年", "3年"], index=1)
+        breakout_days = st.selectbox("突破幾日高點", [5, 20, 60], index=1)
     with col2:
-        period_label = st.selectbox("回測期間", ["6個月", "1年", "3年"], index=1)
+        require_ma_alignment = st.checkbox("要求 5MA > 10MA > 20MA", value=True)
+        require_volume = st.checkbox("要求成交量放大", value=True)
     with col3:
-        holding_days = st.selectbox("持有天數", [3, 5, 10], index=1)
-    with col4:
-        market_is_bullish = st.checkbox("台指偏多", value=False)
+        volume_multiplier = st.number_input("成交量 / 20日均量倍數", min_value=1.0, max_value=5.0, value=1.5, step=0.1)
+        require_eps = st.checkbox("最近四季 EPS 合計 > 0", value=False)
 
-    selected_row = df[df["股票代號"].astype(str) == selected_stock].iloc[0]
-    symbol = normalize_tw_symbol(selected_stock)
-    month_count = backtest_period_months(period_label)
-    history = get_official_daily_history(symbol, month_count=month_count)
-    foreign_3d = pd.to_numeric(selected_row.get("外資3日", 0), errors="coerce")
+    price_col1, price_col2 = st.columns(2)
+    with price_col1:
+        price_min = st.number_input("股價下限", min_value=0.0, value=0.0, step=1.0)
+    with price_col2:
+        price_max = st.number_input("股價上限", min_value=1.0, value=1000.0, step=10.0)
 
-    if not market_is_bullish:
-        st.warning("台指偏多未勾選，策略條件未成立。")
+    if require_eps and not any("EPS" in str(col).upper() for col in df.columns):
+        st.warning("目前資料表沒有 EPS 欄位，EPS 條件會先略過；之後若補進 EPS 資料即可啟用。")
+        require_eps = False
 
-    trades = run_ma_backtest(history, holding_days=holding_days, volume_multiplier=1.5)
-    if pd.notna(foreign_3d) and foreign_3d <= 0:
-        st.warning("目前外資3日未連買，籌碼條件未成立。")
-
-    current_entry_status = get_current_entry_status(history, market_is_bullish, volume_multiplier=1.5)
-    render_entry_status_card(str(selected_row["股票名稱"]), current_entry_status)
-
-    comparison_rows = []
-    for compare_days in [3, 5, 10, 20]:
-        compare_trades = run_ma_backtest(history, holding_days=compare_days, volume_multiplier=1.5)
-        summary = summarize_backtest_trades(compare_trades)
-        comparison_rows.append(
-            {
-                "持有天數": f"{compare_days}天",
-                "交易次數": summary["交易次數"],
-                "勝率": summary["勝率"],
-                "平均報酬": summary["平均報酬"],
-                "最大回撤": summary["最大回撤"],
-                "盈虧比": summary["盈虧比"],
-                "信賴度": summary["信賴度"],
-            }
+    settings = {
+        "month_count": backtest_period_months(period_label),
+        "breakout_days": breakout_days,
+        "require_ma_alignment": require_ma_alignment,
+        "require_volume": require_volume,
+        "volume_multiplier": volume_multiplier,
+        "price_min": price_min,
+        "price_max": price_max,
+        "require_eps": require_eps,
+    }
+    eps_columns = [col for col in df.columns if "EPS" in str(col).upper()]
+    stock_records = tuple(
+        (
+            str(row["股票代號"]),
+            str(row["股票名稱"]),
+            get_eps_value(row[["股票代號", "股票名稱", *eps_columns]]) if eps_columns else None,
         )
-
-    comparison_df = pd.DataFrame(comparison_rows)
-    display_comparison = comparison_df.copy()
-    display_comparison["勝率"] = display_comparison["勝率"].map(lambda value: f"{value:.1f}%")
-    for col in ["平均報酬", "最大回撤"]:
-        display_comparison[col] = display_comparison[col].map(format_signed_pct)
-    display_comparison["盈虧比"] = display_comparison["盈虧比"].map(
-        lambda value: "無虧損樣本" if pd.isna(value) else f"{value:.2f}"
+        for _, row in df[["股票代號", "股票名稱", *eps_columns]].drop_duplicates(subset=["股票代號"]).iterrows()
     )
 
-    st.markdown("### 回測說明")
+    with st.spinner("正在掃描歷史觸發點..."):
+        result_df = build_breakout_backtest(stock_records, settings)
+
+    st.markdown("### 回測條件")
     st.markdown(
         f"""
-        - 進場條件：5MA 大於 10MA，且當日成交量大於 5日均量的 1.5 倍，同時 KD 出現黃金交叉。
-        - KD 黃金交叉：K 值由下往上穿過 D 值。
-        - 出場條件：進場後持有 {holding_days} 個交易日，以第 {holding_days} 個交易日收盤價出場。
-        - 回測期間：{period_label}，資料來源為官方日 K。
-        - 報酬率未扣除手續費、交易稅、滑價與股利影響。
+        - 收盤價突破前 {breakout_days} 日收盤高點。
+        - 多頭排列：{"需要" if require_ma_alignment else "不要求"}。
+        - 成交量條件：{"成交量 > 20日均量 " + f"{volume_multiplier:.1f}" + " 倍" if require_volume else "不要求"}。
+        - 股價區間：{price_min:.2f} ~ {price_max:.2f}。
+        - EPS 條件：{"最近四季 EPS 合計 > 0" if require_eps else "不要求或目前無 EPS 欄位"}。
         """
     )
 
-    st.markdown("### 持有天數比較")
-    valid_comparison = comparison_df[comparison_df["交易次數"] > 0]
-    if not valid_comparison.empty:
-        best_holding = valid_comparison.sort_values("平均報酬", ascending=False).iloc[0]
-        st.success(
-            f"📈 建議持有：{best_holding['持有天數']}\n\n"
-            f"（平均報酬最高 {best_holding['平均報酬']:+.2f}%）"
-        )
-    st.dataframe(display_comparison, use_container_width=True, hide_index=True)
-
-    if trades.empty:
-        st.info(f"近 {period_label} 沒有符合 5MA > 10MA、量能 1.5 倍、KD 黃金交叉的可完成交易。")
+    if result_df.empty:
+        st.info("這組條件目前沒有找到可完成 20 日追蹤的歷史觸發紀錄。")
         return
 
-    summary = summarize_backtest_trades(trades)
-    win_rate = summary["勝率"]
-    avg_return = summary["平均報酬"]
-    best_return = summary["最佳報酬"]
-    worst_return = summary["最差報酬"]
-    avg_drawdown = summary["平均回撤"]
-    max_drawdown = summary["最大回撤"]
-    avg_win = summary["平均獲利"]
-    avg_loss = summary["平均虧損"]
-    profit_loss_ratio = summary["盈虧比"]
-    confidence = summary["信賴度"]
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("觸發次數", len(result_df))
+    summary_cols[1].metric("5日平均", format_signed_pct(result_df["5日後報酬率"].mean()))
+    summary_cols[2].metric("10日平均", format_signed_pct(result_df["10日後報酬率"].mean()))
+    summary_cols[3].metric("20日平均", format_signed_pct(result_df["20日後報酬率"].mean()))
 
-    if len(trades) < 10:
-        st.warning("⚠️ 樣本數不足，僅供參考")
+    display_df = result_df.sort_values("觸發日期", ascending=False).copy()
+    display_df["觸發日期"] = pd.to_datetime(display_df["觸發日期"]).dt.strftime("%Y-%m-%d")
+    display_df["觸發收盤價"] = display_df["觸發收盤價"].map(lambda value: format_number(value, 2))
+    for col in ["5日後報酬率", "10日後報酬率", "20日後報酬率", "觸發後20日內最大漲幅", "觸發後20日內最大回檔"]:
+        display_df[col] = display_df[col].map(lambda value: "" if pd.isna(value) else format_signed_pct(value))
 
-    render_backtest_metric_grid(
-        [
-            ("交易次數", len(trades)),
-            ("勝率", f"{win_rate:.1f}%"),
-            ("平均報酬", f"{avg_return:+.2f}%"),
-            ("最佳 / 最差", f"{best_return:+.2f}% / {worst_return:+.2f}%"),
-            ("最大回撤", f"{max_drawdown:.2f}%"),
-            ("信賴度", confidence),
-        ]
+    st.markdown("### 回測結果")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.caption("報酬率未扣除手續費、交易稅、滑價與股利；歷史觸發不代表未來保證重演。")
+
+
+def render_market_temperature(df):
+    st.subheader("🌡️ 市場溫度計")
+
+    if df.empty:
+        st.info("目前沒有股票資料可統計。")
+        return
+
+    stock_records = tuple(
+        (str(row["股票代號"]), str(row["股票名稱"]))
+        for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
     )
 
-    st.caption(f"平均回撤：{avg_drawdown:.2f}%")
+    with st.spinner("正在統計市場溫度..."):
+        stats, snapshot_df, group_rank = build_market_temperature(stock_records)
 
-    ratio_text = "無虧損樣本" if profit_loss_ratio is None else f"{profit_loss_ratio:.2f}"
-    st.markdown(
-        f"""
-        <div style="
-            padding:14px 16px;
-            border:1px solid #2f3542;
-            border-radius:8px;
-            background:#111827;
-            margin:10px 0 16px 0;
-            color:#d1d5db;
-            font-size:15px;
-        ">
-            平均獲利 <b style="color:#ff4b4b;">{avg_win:+.2f}%</b>
-            ｜
-            平均虧損 <b style="color:#22c55e;">{avg_loss:+.2f}%</b>
-            ｜
-            盈虧比 <b style="color:#ffffff;">{ratio_text}</b>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if not stats:
+        st.info("目前日 K 資料不足，無法計算市場溫度。")
+        return
 
-    display_trades = trades.copy()
-    for col in ["進場日", "出場日"]:
-        display_trades[col] = pd.to_datetime(display_trades[col]).dt.strftime("%Y-%m-%d")
-    for col in ["進場價", "出場價", "成交量倍率", "K值", "D值"]:
-        display_trades[col] = display_trades[col].map(lambda value: format_number(value, 2))
-    for col in ["報酬率", "最大回撤"]:
-        display_trades[col] = display_trades[col].map(format_signed_pct)
+    st.metric("市場溫度分數", f"{stats['市場溫度分數']:.1f} / 100", stats["市場狀態"])
 
-    st.dataframe(display_trades, use_container_width=True, hide_index=True)
+    metric_items = [
+        ("統計股票數", stats["統計股票數"]),
+        ("多頭排列", stats["5MA > 10MA > 20MA"]),
+        ("創20日高", stats["收盤創20日高"]),
+        ("創60日高", stats["收盤創60日高"]),
+        ("量能放大", stats["成交量大於20日均量1.5倍"]),
+        ("漲停家數", stats["漲停家數"]),
+        ("跌停家數", stats["跌停家數"]),
+        ("30元以下轉強", stats["股價30元以下且轉強"]),
+    ]
+    render_backtest_metric_grid(metric_items)
 
-    st.markdown("### 指標補充")
-    st.markdown(
-        f"""
-        - 最大回撤：進場到出場期間，從當段最高收盤價往下跌的最大幅度；數值越負，代表持有過程越容易被洗掉。
-        - 樣本數提醒：交易次數少於 10 筆時，勝率與平均報酬容易失真，僅供參考。
-        - 信賴度：交易次數少於 10 筆為低信賴，10 到 29 筆為中信賴，30 筆以上為高信賴。
-        - 盈虧比：平均獲利 ÷ 平均虧損絕對值；數值越高，代表單次賺錢時能覆蓋更多虧損。
-        - `台指偏多` 為手動盤勢條件，`外資3日` 為目前籌碼提示；兩者不會改寫歷史交易紀錄。
-        """
-    )
+    st.markdown("### 強勢族群排行")
+    if group_rank.empty:
+        st.info("尚無產業分類資料。")
+    else:
+        display_group = group_rank.head(10).copy()
+        display_group["強勢比例"] = display_group["強勢比例"].map(lambda value: f"{value:.1f}%")
+        st.dataframe(display_group, use_container_width=True, hide_index=True)
+
+    with st.expander("查看個股統計明細"):
+        display_snapshot = snapshot_df.copy()
+        rename_map = {
+            "ma_bull": "5MA>10MA>20MA",
+            "high20": "創20日高",
+            "high60": "創60日高",
+            "volume_surge": "量能放大",
+            "limit_up": "漲停",
+            "limit_down": "跌停",
+            "under30_turning": "30元以下轉強",
+        }
+        display_snapshot = display_snapshot.rename(columns=rename_map)
+        st.dataframe(
+            display_snapshot[["股票代號", "股票名稱", *rename_map.values()]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_k_chart(k_df):
@@ -1574,6 +1778,7 @@ view_options = [
     "🚀 強勢排行榜",
     "🔎 個股查詢",
     "🧪 回測實驗室",
+    "🌡️ 市場溫度計",
     "🏆 策略排行榜",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
@@ -1599,5 +1804,7 @@ elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
+elif active_view == "🌡️ 市場溫度計":
+    render_market_temperature(df)
 else:
     render_strategy_rank(df)
