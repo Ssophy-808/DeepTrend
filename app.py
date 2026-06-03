@@ -33,7 +33,7 @@ import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from textwrap import dedent
 
@@ -49,6 +49,7 @@ from plotly.subplots import make_subplots
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
 GROUP_FILE = BASE_DIR / "groups.csv"
+BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1638,6 +1639,136 @@ def render_backtest_metric_grid(metrics):
     )
 
 
+def ensure_backtest_record_dir():
+    BACKTEST_RECORD_DIR.mkdir(parents=True, exist_ok=True)
+    return BACKTEST_RECORD_DIR
+
+
+def build_backtest_record_df(result_df, settings, strategy_name, run_time):
+    record_df = pd.DataFrame(
+        {
+            "run_time": run_time,
+            "strategy_name": strategy_name,
+            "stock_id": result_df["股票代號"],
+            "stock_name": result_df["股票名稱"],
+            "trigger_date": pd.to_datetime(result_df["觸發日期"]).dt.strftime("%Y-%m-%d"),
+            "trigger_close": result_df["觸發收盤價"],
+            "breakout_days": settings["breakout_days"],
+            "require_ma_alignment": settings["require_ma_alignment"],
+            "volume_ratio_threshold": settings["volume_multiplier"],
+            "price_min": settings["price_min"],
+            "price_max": settings["price_max"],
+            "require_eps_positive": settings["require_eps"],
+            "require_above_120ma": settings.get("require_above_ma120", False),
+            "return_5d": result_df["5日後報酬率"],
+            "return_10d": result_df["10日後報酬率"],
+            "return_20d": result_df["20日後報酬率"],
+            "days_to_break_5ma": result_df["幾天後跌破5日線"],
+            "max_gain_20d": result_df["觸發後20日內最大漲幅"],
+            "max_drawdown_20d": result_df["觸發後20日內最大回檔"],
+        }
+    )
+    return record_df
+
+
+def save_backtest_record(result_df, settings, strategy_name):
+    if result_df.empty:
+        return None, None
+
+    run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record_signature = (
+        strategy_name,
+        tuple(sorted(settings.items())),
+        len(result_df),
+        str(result_df["觸發日期"].max()),
+    )
+
+    if st.session_state.get("last_backtest_record_signature") == record_signature:
+        return st.session_state.get("last_backtest_record_path"), st.session_state.get("last_backtest_record_csv")
+
+    record_df = build_backtest_record_df(result_df, settings, strategy_name, run_time)
+    record_dir = ensure_backtest_record_dir()
+    file_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    record_path = record_dir / f"backtest_{file_time}.csv"
+    csv_text = record_df.to_csv(index=False, encoding="utf-8-sig")
+    record_path.write_text(csv_text, encoding="utf-8-sig")
+
+    st.session_state["last_backtest_record_signature"] = record_signature
+    st.session_state["last_backtest_record_path"] = str(record_path)
+    st.session_state["last_backtest_record_csv"] = csv_text
+    return str(record_path), csv_text
+
+
+def list_backtest_record_files():
+    record_dir = ensure_backtest_record_dir()
+    return sorted(record_dir.glob("backtest_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def summarize_backtest_record(record_df):
+    if record_df.empty:
+        return []
+
+    def numeric_record_column(column):
+        if column not in record_df.columns:
+            return pd.Series(dtype="float64")
+        return pd.to_numeric(record_df[column], errors="coerce")
+
+    return_5d = numeric_record_column("return_5d")
+    return_10d = numeric_record_column("return_10d")
+    return_20d = numeric_record_column("return_20d")
+    max_gain_20d = numeric_record_column("max_gain_20d")
+
+    return [
+        ("符合筆數", len(record_df)),
+        ("5日平均報酬率", format_signed_pct(return_5d.mean())),
+        ("10日平均報酬率", format_signed_pct(return_10d.mean())),
+        ("20日平均報酬率", format_signed_pct(return_20d.mean())),
+        ("20日後上漲機率", f"{(return_20d > 0).mean() * 100:.1f}%"),
+        ("20日平均最大漲幅", format_signed_pct(max_gain_20d.mean())),
+    ]
+
+
+def render_backtest_record_history():
+    st.markdown("### 歷史紀錄區")
+    try:
+        record_files = list_backtest_record_files()
+    except Exception as exc:
+        st.error(f"讀取歷史紀錄失敗：{exc}")
+        return
+
+    if not record_files:
+        st.info("目前尚無歷史回測紀錄。")
+        return
+
+    recent_files = record_files[:10]
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "檔案名稱": [path.name for path in recent_files],
+                "修改時間": [
+                    datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    for path in recent_files
+                ],
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    selected_name = st.selectbox("讀取歷史紀錄", [path.name for path in recent_files])
+    selected_path = next(path for path in recent_files if path.name == selected_name)
+
+    try:
+        selected_df = pd.read_csv(selected_path)
+    except Exception as exc:
+        st.error(f"CSV 讀取失敗：{exc}")
+        return
+
+    render_backtest_metric_grid(summarize_backtest_record(selected_df))
+    with st.expander("查看歷史紀錄明細"):
+        st.dataframe(selected_df.head(200), use_container_width=True, hide_index=True)
+
+
 def render_backtest_lab(df):
     st.subheader("🧪 回測實驗室")
 
@@ -1722,6 +1853,8 @@ def render_backtest_lab(df):
     with st.spinner("正在掃描歷史觸發點..."):
         result_df = build_breakout_backtest(stock_records, settings)
 
+    strategy_name = f"{'轉機股模式' if turnaround_mode else '突破回測'}-{breakout_method}-{breakout_days}日"
+
     st.markdown("### 回測條件")
     st.markdown(
         f"""
@@ -1737,7 +1870,22 @@ def render_backtest_lab(df):
 
     if result_df.empty:
         st.info("這組條件目前沒有找到可完成 20 日追蹤的歷史觸發紀錄。")
+        st.info("本次沒有符合條件的結果，未建立紀錄檔")
+        render_backtest_record_history()
         return
+
+    try:
+        record_path, csv_text = save_backtest_record(result_df, settings, strategy_name)
+        if record_path and csv_text:
+            st.success(f"本次回測紀錄已儲存：{record_path}")
+            st.download_button(
+                "下載本次 CSV",
+                data=csv_text.encode("utf-8-sig"),
+                file_name=Path(record_path).name,
+                mime="text/csv",
+            )
+    except Exception as exc:
+        st.error(f"回測紀錄儲存失敗：{exc}")
 
     st.markdown("### 統計摘要")
     render_backtest_metric_grid(
@@ -1778,6 +1926,7 @@ def render_backtest_lab(df):
         st.dataframe(display_df.head(200), use_container_width=True, hide_index=True)
 
     st.caption("報酬率未扣除手續費、交易稅、滑價與股利；歷史觸發不代表未來保證重演。")
+    render_backtest_record_history()
 
 
 def render_market_temperature(df):
