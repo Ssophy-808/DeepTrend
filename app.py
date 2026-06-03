@@ -28,6 +28,17 @@
 #    - 讀取並整理股票分析資料。
 #    - 顯示更新按鈕、篩選條件與主功能選單。
 #    - 依選單切換股票雷達、排行榜、掃描、個股查詢與回測實驗室。
+#
+# Deep Trend 計算說明
+#    - 股票雷達：使用 output/stock_analysis_result.xlsx 內的技術分數、狀態、籌碼欄位與即時補價後的衍生欄位呈現。
+#    - 族群熱度：用 groups.csv 將觀察池股票映射到族群，再用技術分數、漲跌、乖離與籌碼資料估算族群強弱。
+#    - 回測實驗室：只用官方日 K 重新計算均線、量能、突破條件與後續報酬，不回寫 Deep Trend 主分數。
+#    - 觀察池溫度：只統計目前 watchlist / Excel 觀察池內股票，不代表全市場；分數由多頭排列、創高、量增、漲跌停與低價轉強比例組成。
+#    - 新聞熱度：使用 Google News RSS 的近 7 天標題做關鍵字統計，只作輔助欄位，不進入主分數。
+
+# =========================
+# Imports and constants
+# =========================
 
 import re
 import subprocess
@@ -56,7 +67,12 @@ BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+# =========================
+# Basic data helpers
+# =========================
+
 def get_series(df, column):
+    """Return a single Series from yfinance data, even when columns are MultiIndex/DataFrame-like."""
     data = df[column]
     if isinstance(data, pd.DataFrame):
         return data.iloc[:, 0]
@@ -64,6 +80,7 @@ def get_series(df, column):
 
 
 def normalize_tw_symbol(symbol):
+    """Normalize plain Taiwan stock codes into yfinance-style symbols such as 2330.TW."""
     symbol = str(symbol).strip()
 
     if not symbol:
@@ -78,6 +95,7 @@ def normalize_tw_symbol(symbol):
 
 @st.cache_data(ttl=600)
 def download_market_data(symbol, period="3mo", interval="1d"):
+    """Download market data through yfinance with a short cache to reduce repeated requests."""
     return yf.download(
         symbol,
         period=period,
@@ -88,6 +106,7 @@ def download_market_data(symbol, period="3mo", interval="1d"):
 
 
 def first_quote_price(value):
+    """Extract the first price from TWSE realtime quote strings such as bid/ask values joined by underscores."""
     text = str(value or "").strip()
     if not text or text == "-":
         return 0
@@ -99,6 +118,7 @@ def first_quote_price(value):
 
 
 def to_float(value):
+    """Convert exchange-provided numeric strings into float while treating blank/null values as 0."""
     try:
         text = str(value).replace(",", "").replace("%", "").strip()
         if text in ["", "-", "NULL"]:
@@ -109,6 +129,7 @@ def to_float(value):
 
 
 def parse_roc_date(value):
+    """Convert Taiwan ROC date strings like 113/01/02 into Python date objects."""
     parts = str(value).split("/")
     if len(parts) != 3:
         return None
@@ -122,6 +143,7 @@ def parse_roc_date(value):
 
 
 def recent_month_starts(month_count=3):
+    """Build YYYYMM01 strings for the latest N months used by TWSE/TPEX historical APIs."""
     today = date.today()
     year = today.year
     month = today.month
@@ -138,6 +160,7 @@ def recent_month_starts(month_count=3):
 
 
 def build_twse_channel(ticker):
+    """Build the TWSE realtime channel id for listed or OTC symbols."""
     text = str(ticker).strip()
     code = text.split(".")[0]
 
@@ -152,6 +175,7 @@ def build_twse_channel(ticker):
 
 @st.cache_data(ttl=300)
 def get_official_daily_history(ticker, month_count=3):
+    """Fetch official TWSE/TPEX daily K data and normalize it into 日期/收盤價/最高價/最低價/成交量 columns."""
     text = str(ticker).strip()
     code = text.split(".")[0]
 
@@ -226,6 +250,7 @@ def get_official_daily_history(ticker, month_count=3):
 
 
 def official_history_to_kline(history):
+    """Convert official TWSE/TPEX daily rows into yfinance-like OHLCV data for Plotly candlesticks."""
     if history.empty:
         return pd.DataFrame()
 
@@ -254,6 +279,7 @@ def official_history_to_kline(history):
 
 @st.cache_data(ttl=10)
 def get_twse_realtime_map(tickers):
+    """Fetch TWSE realtime quote snapshots for the current watchlist; failures are skipped per ticker."""
     channels = []
     ticker_by_channel = {}
 
@@ -326,6 +352,7 @@ def get_twse_realtime_map(tickers):
 
 
 def color_status(val):
+    """Style the 狀態 column in the detailed stock table based on its emoji label."""
     value = str(val)
 
     if "🔥" in value:
@@ -341,6 +368,7 @@ def color_status(val):
 
 
 def format_number(value, decimals=2):
+    """Format floats for UI display while keeping missing values blank."""
     if pd.isna(value):
         return ""
     try:
@@ -350,6 +378,7 @@ def format_number(value, decimals=2):
 
 
 def format_integer(value):
+    """Format integer values such as volume and chip counts for UI display."""
     if pd.isna(value):
         return ""
     try:
@@ -359,6 +388,7 @@ def format_integer(value):
 
 
 def format_signed_pct(value):
+    """Format returns/changes as signed percentages, e.g. +3.25% or -1.10%."""
     if pd.isna(value):
         return ""
     try:
@@ -368,6 +398,7 @@ def format_signed_pct(value):
 
 
 def value_color(value):
+    """Choose the app's red/green/neutral color for positive, negative, or zero values."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -381,10 +412,12 @@ def value_color(value):
 
 
 def stock_code_key(value):
+    """Normalize stock identifiers to the numeric code so groups/watchlist/output can be joined."""
     return str(value).strip().split(".")[0]
 
 
 def build_stock_label_map(df):
+    """Create selectbox labels in the form '代號 名稱'."""
     if df.empty:
         return {}
 
@@ -397,6 +430,7 @@ def build_stock_label_map(df):
 
 @st.cache_data(ttl=600)
 def load_group_data():
+    """Load and normalize groups.csv; cached because group mappings rarely change during a session."""
     if not GROUP_FILE.exists():
         return pd.DataFrame(columns=["股票代號", "族群", "股票代號_key"])
 
@@ -409,6 +443,7 @@ def load_group_data():
 
 
 def group_heat_status(heat_score, bullish_ratio, member_count):
+    """Convert a group heat score and bullish ratio into a compact status label."""
     if member_count >= 2 and bullish_ratio >= 0.8 and heat_score >= 75:
         return "🔥 全面轉強"
     if bullish_ratio >= 0.55 and heat_score >= 55:
@@ -419,6 +454,7 @@ def group_heat_status(heat_score, bullish_ratio, member_count):
 
 
 def build_group_heat(df):
+    """Aggregate individual stock signals into group-level heat rankings."""
     group_df = load_group_data()
     if group_df.empty or df.empty:
         return pd.DataFrame()
@@ -450,6 +486,10 @@ def build_group_heat(df):
         foreign_5d = float(group_rows["外資5日"].sum()) if "外資5日" in group_rows.columns else 0
         investment_5d = float(group_rows["投信5日"].sum()) if "投信5日" in group_rows.columns else 0
 
+        # 族群熱度公式：
+        # 1. 以族群平均技術分數為底。
+        # 2. 加入今日平均漲跌幅、偏多比例。
+        # 3. 再用 5 日法人/籌碼方向做小幅加減分。
         heat_score = avg_score
         heat_score += max(min(avg_change * 5, 15), -15)
         heat_score += bullish_ratio * 20
@@ -491,6 +531,7 @@ def build_group_heat(df):
 
 
 def add_signal_labels(df):
+    """Add derived labels such as moving-average structure and volume breakout alerts."""
     labeled_df = df.copy()
 
     ma5 = pd.to_numeric(labeled_df.get("5日線"), errors="coerce")
@@ -505,6 +546,7 @@ def add_signal_labels(df):
     labeled_df.loc[(ma5 > ma10) & (ma10 > ma20), "均線型態"] = "🔥 多頭排列"
     labeled_df.loc[(ma5 < ma10) & (ma10 < ma20), "均線型態"] = "🔴 空頭排列"
 
+    # 量價異常公式：成交量相對 5 日均量放大，且價格站上/接近 20 日高點。
     strong_breakout = (volume > avg_volume_5 * 2) & (close >= high_20)
     volume_breakout = (volume > avg_volume_5 * 1.5) & (close >= high_20)
 
@@ -516,6 +558,7 @@ def add_signal_labels(df):
 
 
 def load_stock_result():
+    """Load the generated Excel analysis file that drives the main app screens."""
     try:
         return pd.read_excel(RESULT_FILE)
     except FileNotFoundError:
@@ -524,6 +567,7 @@ def load_stock_result():
 
 
 def prepare_stock_data(df):
+    """Coerce key columns to numeric types and add derived Deep Trend display labels."""
     numeric_columns = [
         "收盤價",
         "5日線",
@@ -543,11 +587,13 @@ def prepare_stock_data(df):
     if "今日漲跌幅" not in df.columns:
         df["今日漲跌幅"] = pd.NA
 
+    # 乖離率公式：目前收盤價相對 5 日線的距離，用於強勢排行和雷達排序。
     df["乖離率"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
     return add_signal_labels(df)
 
 
 def apply_realtime_prices(df):
+    """Optionally patch the Excel data with TWSE realtime quotes for intraday display."""
     if "股票代號" not in df.columns or "收盤價" not in df.columns:
         return df
 
@@ -632,6 +678,7 @@ def apply_realtime_prices(df):
 
 
 def render_rank(top_strength):
+    """Render the simple strength leaderboard sorted by 乖離率."""
     st.subheader("🚀 強勢股排行榜")
 
     if top_strength.empty:
@@ -652,6 +699,7 @@ def render_rank(top_strength):
 
 
 def render_group_heat(df):
+    """Render group-level heat cards and the detailed group heat table."""
     st.subheader("🔥 族群熱度")
 
     heat_df = build_group_heat(df)
@@ -699,6 +747,7 @@ def render_group_heat(df):
 
 
 def open_stock_detail(stock_code):
+    """Switch the app state to the detail page for the clicked radar card."""
     stock_code = str(stock_code)
     st.session_state["pending_detail_stock"] = stock_code
     st.session_state["detail_stock"] = stock_code
@@ -706,6 +755,7 @@ def open_stock_detail(stock_code):
 
 
 def render_stock_radar(filtered_df):
+    """Render the primary stock radar cards. This is the main watchlist dashboard."""
     st.subheader("📊 股票雷達")
     st.caption(f"目前顯示 {len(filtered_df)} 檔股票")
 
@@ -809,6 +859,7 @@ def render_stock_radar(filtered_df):
 
 
 def render_scan_table(filtered_df):
+    """Render the full detailed stock table with formatting and status coloring."""
     st.subheader("📋 詳細表格")
     st.write(f"目前顯示 {len(filtered_df)} 檔股票")
 
@@ -884,6 +935,7 @@ def render_scan_table(filtered_df):
 
 
 def render_detail(filtered_df):
+    """Render single-stock summary cards plus the K-line chart."""
     if filtered_df.empty:
         st.info("請調整篩選條件後再查看個股。")
         return
@@ -959,6 +1011,7 @@ def render_detail(filtered_df):
 
 
 def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
+    """Run the older MA/KD strategy used by the strategy ranking page."""
     if history.empty or len(history) < 30:
         return pd.DataFrame()
 
@@ -978,6 +1031,7 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
     test_df["D值"] = test_df["K值"].ewm(alpha=1 / 3, adjust=False).mean()
     test_df["prev_K值"] = test_df["K值"].shift(1)
     test_df["prev_D值"] = test_df["D值"].shift(1)
+    # 舊策略進場公式：5MA > 10MA + 量能放大 + KD 黃金交叉。
     test_df["signal"] = (
         (test_df["MA5"] > test_df["MA10"])
         & (test_df["成交量"] > test_df["5日均量"] * volume_multiplier)
@@ -1019,6 +1073,7 @@ def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
 
 
 def backtest_confidence(trade_count):
+    """Classify backtest reliability based on sample count."""
     if trade_count < 10:
         return "🔴 低信賴"
     if trade_count < 30:
@@ -1027,6 +1082,7 @@ def backtest_confidence(trade_count):
 
 
 def summarize_backtest_trades(trades):
+    """Summarize older strategy trades into win rate, average return, drawdown, and payoff ratio."""
     if trades.empty:
         return {
             "交易次數": 0,
@@ -1064,6 +1120,7 @@ def summarize_backtest_trades(trades):
 
 
 def backtest_period_months(period_label):
+    """Translate UI period labels into month counts for historical data fetching."""
     return {
         "6個月": 6,
         "1年": 12,
@@ -1074,6 +1131,7 @@ def backtest_period_months(period_label):
 
 
 def get_current_entry_status(history, market_is_bullish, volume_multiplier=1.5):
+    """Check whether the latest K-line state is close to the current entry-condition checklist."""
     if history.empty or len(history) < 10:
         return None
 
@@ -1110,6 +1168,7 @@ def get_current_entry_status(history, market_is_bullish, volume_multiplier=1.5):
 
 
 def render_entry_status_card(stock_name, status):
+    """Render the checklist card that explains which entry conditions are currently satisfied."""
     if not status:
         st.info("目前日 K 資料不足，無法判斷是否接近歷史進場條件。")
         return
@@ -1151,6 +1210,7 @@ def render_entry_status_card(stock_name, status):
 
 
 def prepare_breakout_history(history):
+    """Prepare official daily K data with moving averages and 20-day average volume for breakout tests."""
     if history.empty:
         return pd.DataFrame()
 
@@ -1172,6 +1232,7 @@ def prepare_breakout_history(history):
 
 @st.cache_data(ttl=900)
 def get_market_temperature_history(ticker):
+    """Return a lightweight 120-trading-day history for the observation-pool thermometer."""
     history = get_official_daily_history(ticker, month_count=6)
     history = prepare_breakout_history(history)
     if history.empty:
@@ -1208,6 +1269,7 @@ RISK_NEWS_KEYWORDS = [
 
 
 def empty_news_signal():
+    """Return the neutral news signal used when RSS is disabled or no titles are found."""
     return {
         "新聞熱度": "無近期新聞",
         "news_count": 0,
@@ -1220,6 +1282,7 @@ def empty_news_signal():
 
 @st.cache_data(ttl=3600)
 def fetch_recent_news_titles(ticker, name):
+    """Fetch recent Google News RSS titles for a stock without API keys or full-text analysis."""
     code = str(ticker).split(".")[0]
     query = quote_plus(f"{name} {code} 台股")
     url = f"https://news.google.com/rss/search?q={query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -1249,6 +1312,7 @@ def fetch_recent_news_titles(ticker, name):
 
 
 def analyze_stock_news(ticker, name, enable_news=False):
+    """Count recent RSS titles and match positive/risk keywords to produce a lightweight news score."""
     if not enable_news:
         return empty_news_signal()
 
@@ -1272,6 +1336,7 @@ def analyze_stock_news(ticker, name, enable_news=False):
 
 
 def get_eps_value(row):
+    """Sum EPS-like columns if present; returns None when EPS data is unavailable."""
     eps_columns = [col for col in row.index if "EPS" in str(col).upper()]
     if not eps_columns:
         return None
@@ -1285,10 +1350,12 @@ def get_eps_value(row):
 
 @st.cache_data(ttl=3600)
 def get_eps_columns(columns):
+    """Cache discovery of EPS columns because most app runs have no EPS data yet."""
     return [col for col in columns if "EPS" in str(col).upper()]
 
 
 def days_until_break_ma5(history, start_index, max_days=20):
+    """Find how many trading days after entry the close first falls below MA5."""
     for offset in range(1, max_days + 1):
         check_index = start_index + offset
         if check_index >= len(history):
@@ -1301,6 +1368,7 @@ def days_until_break_ma5(history, start_index, max_days=20):
 
 
 def calc_forward_return(history, start_index, days):
+    """Calculate fixed-horizon return after a trigger date."""
     target_index = start_index + days
     if target_index >= len(history):
         return None
@@ -1314,6 +1382,7 @@ def calc_forward_return(history, start_index, days):
 
 
 def run_breakout_backtest_for_stock(row, settings):
+    """Scan one stock's history for breakout triggers and collect forward-return outcomes."""
     ticker = str(row["股票代號"])
     name = str(row["股票名稱"])
     history = get_official_daily_history(ticker, month_count=settings["month_count"])
@@ -1337,6 +1406,10 @@ def run_breakout_backtest_for_stock(row, settings):
     volume_multiplier = settings["volume_multiplier"]
     news_signal = analyze_stock_news(ticker, name, enable_news=settings.get("enable_news", False))
 
+    # 新版回測進場公式：
+    # 1. 收盤/盤中價格突破指定日數高點。
+    # 2. 依使用者勾選，檢查多頭排列、量能放大、EPS、半年線與股價區間。
+    # 3. 觸發後只追蹤固定 5/10/20 日報酬與 20 日內風險/潛力。
     start_index = max(breakout_days, 120 if settings.get("require_above_ma120") else 20)
     for index in range(start_index, len(history) - 20):
         current = history.loc[index]
@@ -1383,6 +1456,7 @@ def run_breakout_backtest_for_stock(row, settings):
 
 @st.cache_data(ttl=900)
 def build_breakout_backtest(stock_records, settings):
+    """Run the breakout scanner across the selected stock records."""
     rows = []
     for record in stock_records:
         row = pd.Series({"股票代號": record[0], "股票名稱": record[1], "EPS合計": record[2]})
@@ -1391,6 +1465,7 @@ def build_breakout_backtest(stock_records, settings):
 
 
 def latest_market_snapshot(row, enable_news=False):
+    """Build the latest observation-pool thermometer signals for one stock."""
     ticker = str(row["股票代號"])
     name = str(row["股票名稱"])
     history = get_market_temperature_history(ticker)
@@ -1419,6 +1494,7 @@ def latest_market_snapshot(row, enable_news=False):
 
 
 def market_temperature_state(score):
+    """Map a 0-100 observation-pool temperature score to a market-state label."""
     if score <= 20:
         return "極冷"
     if score <= 40:
@@ -1431,6 +1507,7 @@ def market_temperature_state(score):
 
 
 def group_heat_level(strong_ratio):
+    """Translate group strong-ratio percentage into a fire-level label."""
     if strong_ratio >= 80:
         return "🔥🔥🔥🔥🔥"
     if strong_ratio >= 60:
@@ -1444,6 +1521,7 @@ def group_heat_level(strong_ratio):
 
 @st.cache_data(ttl=900)
 def build_market_temperature(stock_records, enable_news=False):
+    """Calculate observation-pool temperature and group rankings from lightweight latest K data."""
     snapshots = []
     for record in stock_records:
         snapshot = latest_market_snapshot(
@@ -1489,6 +1567,9 @@ def build_market_temperature(stock_records, enable_news=False):
     limit_down_ratio = stats["跌停家數"] / total
     low_price_strong_ratio = stats["股價30元以下且轉強"] / total
 
+    # 觀察池溫度公式：
+    # 各訊號先除以 total 轉成比例，再乘上百分制權重；最後限制在 0～100。
+    # 注意：權重本身已是百分制，所以這裡不再額外 * 100。
     score = (
         bull_ratio * 25
         + high20_ratio * 20
@@ -1512,6 +1593,7 @@ def build_market_temperature(stock_records, enable_news=False):
                 ma_count = int(group_rows_df["ma_bull"].sum())
                 high20_count = int(group_rows_df["high20"].sum())
                 volume_count = int(group_rows_df["volume_surge"].sum())
+                # 強勢族群公式：多頭排列數 + 創20日高數 + 量增數。
                 strong_count = ma_count + high20_count + volume_count
                 stock_count = len(group_rows_df)
                 strong_ratio = strong_count / (stock_count * 3) * 100 if stock_count else 0
@@ -1537,6 +1619,7 @@ def build_market_temperature(stock_records, enable_news=False):
 
 @st.cache_data(ttl=900)
 def build_strategy_rank(stock_records, month_count, holding_days):
+    """Build the older strategy ranking table for all selected stocks."""
     rows = []
 
     for ticker, name in stock_records:
@@ -1570,6 +1653,7 @@ def build_strategy_rank(stock_records, month_count, holding_days):
 
 
 def render_strategy_rank(df):
+    """Render the older strategy leaderboard page."""
     st.subheader("🏆 策略排行榜")
 
     if df.empty:
@@ -1607,6 +1691,7 @@ def render_strategy_rank(df):
 
 
 def render_backtest_metric_grid(metrics):
+    """Render compact metric cards used by backtest and observation-pool pages."""
     cards = "\n".join(
         f"""
         <div class="backtest-metric-card">
@@ -1672,11 +1757,13 @@ def render_backtest_metric_grid(metrics):
 
 
 def ensure_backtest_record_dir():
+    """Ensure the local backtest_records directory exists before writing or reading CSV files."""
     BACKTEST_RECORD_DIR.mkdir(parents=True, exist_ok=True)
     return BACKTEST_RECORD_DIR
 
 
 def build_backtest_record_df(result_df, settings, strategy_name, run_time):
+    """Convert the current backtest result into the normalized CSV record schema."""
     record_df = pd.DataFrame(
         {
             "run_time": run_time,
@@ -1704,6 +1791,7 @@ def build_backtest_record_df(result_df, settings, strategy_name, run_time):
 
 
 def save_backtest_record(result_df, settings, strategy_name):
+    """Persist a non-empty backtest result to CSV and avoid duplicate writes during Streamlit reruns."""
     if result_df.empty:
         return None, None
 
@@ -1732,11 +1820,13 @@ def save_backtest_record(result_df, settings, strategy_name):
 
 
 def list_backtest_record_files():
+    """List saved backtest CSV files from newest to oldest."""
     record_dir = ensure_backtest_record_dir()
     return sorted(record_dir.glob("backtest_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
 def summarize_backtest_record(record_df):
+    """Summarize a saved backtest CSV for the historical record viewer."""
     if record_df.empty:
         return []
 
@@ -1761,6 +1851,7 @@ def summarize_backtest_record(record_df):
 
 
 def render_backtest_record_history():
+    """Render the historical backtest record browser and CSV preview area."""
     st.markdown("### 歷史紀錄區")
     try:
         record_files = list_backtest_record_files()
@@ -1802,6 +1893,7 @@ def render_backtest_record_history():
 
 
 def render_backtest_lab(df):
+    """Render the breakout backtest lab: controls, summary, top runners, CSV record, and detail table."""
     st.subheader("🧪 回測實驗室")
 
     if df.empty:
@@ -1835,6 +1927,7 @@ def render_backtest_lab(df):
         price_max = st.number_input("股價上限", min_value=1.0, value=30.0, step=10.0)
 
     if turnaround_mode:
+        # 轉機股模式：把常用低價轉強條件一次套用，降低手動設定成本。
         breakout_days = 20
         breakout_method = "收盤創高"
         require_ma_alignment = True
@@ -1958,6 +2051,7 @@ def render_backtest_lab(df):
 
 
 def render_market_temperature(df):
+    """Render the Deep Trend observation-pool temperature page and strong-group ranking."""
     st.subheader("🌡️ Deep Trend 觀察池溫度")
 
     if df.empty:
@@ -2038,6 +2132,7 @@ def render_market_temperature(df):
 
 
 def render_k_chart(k_df):
+    """Render candlestick, volume, and RSI subplots with category x-axis spacing."""
     open_series = get_series(k_df, "Open")
     high_series = get_series(k_df, "High")
     low_series = get_series(k_df, "Low")
@@ -2109,6 +2204,15 @@ def render_k_chart(k_df):
     st.caption("🔴 紅量 = 收漲　🟢 綠量 = 收跌")
     st.plotly_chart(fig, use_container_width=True)
 
+
+# =========================
+# Streamlit main flow
+# =========================
+# Streamlit 會從這裡開始由上而下執行：
+# 1. 設定頁面。
+# 2. 讀取並整理 output Excel。
+# 3. 顯示更新按鈕與篩選條件。
+# 4. 依功能選單呼叫對應 render_* 頁面函式。
 
 st.set_page_config(page_title="DeepTrend", page_icon="🔥", layout="wide")
 
