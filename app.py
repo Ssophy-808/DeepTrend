@@ -29,10 +29,11 @@
 #    - 顯示更新按鈕、篩選條件與主功能選單。
 #    - 依選單切換股票雷達、排行榜、掃描、個股查詢與回測實驗室。
 
+import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from textwrap import dedent
 
@@ -1159,6 +1160,107 @@ def prepare_breakout_history(history):
     return prepared.dropna(subset=["日期", "收盤價"]).reset_index(drop=True)
 
 
+POSITIVE_NEWS_KEYWORDS = [
+    "AI",
+    "NVIDIA",
+    "GB300",
+    "伺服器",
+    "記憶體",
+    "漲價",
+    "擴產",
+    "接單",
+    "轉機",
+    "營收成長",
+    "法說",
+]
+
+RISK_NEWS_KEYWORDS = [
+    "虧損",
+    "下修",
+    "衰退",
+    "裁員",
+    "停工",
+    "違約",
+    "訴訟",
+    "調查",
+    "減資",
+    "處分",
+]
+
+
+def get_news_api_key():
+    try:
+        return st.secrets.get("NEWS_API_KEY") or os.environ.get("NEWS_API_KEY", "")
+    except Exception:
+        return os.environ.get("NEWS_API_KEY", "")
+
+
+def empty_news_signal():
+    return {
+        "新聞熱度": "無近期新聞",
+        "news_count": 0,
+        "positive_keywords": "無",
+        "risk_keywords": "無",
+        "news_score": 0,
+    }
+
+
+@st.cache_data(ttl=3600)
+def fetch_recent_news_titles(ticker, name, api_key):
+    if not api_key:
+        return []
+
+    code = str(ticker).split(".")[0]
+    query = f'"{name}" OR "{code}"'
+    from_date = (date.today() - timedelta(days=7)).isoformat()
+
+    try:
+        response = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q": query,
+                "from": from_date,
+                "language": "zh",
+                "sortBy": "publishedAt",
+                "pageSize": 20,
+                "apiKey": api_key,
+            },
+            timeout=8,
+        )
+        payload = response.json()
+        if response.status_code != 200 or payload.get("status") != "ok":
+            return []
+        return [
+            str(article.get("title", "")).strip()
+            for article in payload.get("articles", [])
+            if str(article.get("title", "")).strip()
+        ]
+    except Exception:
+        return []
+
+
+def analyze_stock_news(ticker, name, enable_news=False):
+    if not enable_news:
+        return empty_news_signal()
+
+    titles = fetch_recent_news_titles(ticker, name, get_news_api_key())
+    if not titles:
+        return empty_news_signal()
+
+    text = " ".join(titles).upper()
+    positive_hits = [keyword for keyword in POSITIVE_NEWS_KEYWORDS if keyword.upper() in text]
+    risk_hits = [keyword for keyword in RISK_NEWS_KEYWORDS if keyword.upper() in text]
+    score = min(10, max(0, len(positive_hits) * 2 + min(len(titles), 5) - len(risk_hits) * 2))
+
+    return {
+        "新聞熱度": f"{score}/10（{len(titles)}則）",
+        "news_count": len(titles),
+        "positive_keywords": "、".join(positive_hits) if positive_hits else "無",
+        "risk_keywords": "、".join(risk_hits) if risk_hits else "無",
+        "news_score": score,
+    }
+
+
 def get_eps_value(row):
     eps_columns = [col for col in row.index if "EPS" in str(col).upper()]
     if not eps_columns:
@@ -1214,6 +1316,7 @@ def run_breakout_backtest_for_stock(row, settings):
     price_min = settings["price_min"]
     price_max = settings["price_max"]
     volume_multiplier = settings["volume_multiplier"]
+    news_signal = analyze_stock_news(ticker, name, enable_news=settings.get("enable_news", False))
 
     for index in range(breakout_days, len(history) - 20):
         current = history.loc[index]
@@ -1245,6 +1348,7 @@ def run_breakout_backtest_for_stock(row, settings):
                 "幾天後跌破5日線": days_until_break_ma5(history, index, max_days=20),
                 "觸發後20日內最大漲幅": round(float(max_rise), 2) if pd.notna(max_rise) else None,
                 "觸發後20日內最大回檔": round(float(max_pullback), 2) if pd.notna(max_pullback) else None,
+                **news_signal,
             }
         )
 
@@ -1260,7 +1364,7 @@ def build_breakout_backtest(stock_records, settings):
     return pd.DataFrame(rows)
 
 
-def latest_market_snapshot(row, month_count=4):
+def latest_market_snapshot(row, month_count=4, enable_news=False):
     ticker = str(row["股票代號"])
     name = str(row["股票名稱"])
     history = get_official_daily_history(ticker, month_count=month_count)
@@ -1285,6 +1389,7 @@ def latest_market_snapshot(row, month_count=4):
         "limit_up": bool(change_pct >= 9.5),
         "limit_down": bool(change_pct <= -9.5),
         "under30_turning": bool(latest["收盤價"] <= 30 and latest["MA5"] > latest["MA10"] and latest["收盤價"] > latest["MA20"]),
+        **analyze_stock_news(ticker, name, enable_news=enable_news),
     }
 
 
@@ -1301,10 +1406,13 @@ def market_temperature_state(score):
 
 
 @st.cache_data(ttl=900)
-def build_market_temperature(stock_records):
+def build_market_temperature(stock_records, enable_news=False):
     snapshots = []
     for record in stock_records:
-        snapshot = latest_market_snapshot(pd.Series({"股票代號": record[0], "股票名稱": record[1]}))
+        snapshot = latest_market_snapshot(
+            pd.Series({"股票代號": record[0], "股票名稱": record[1]}),
+            enable_news=enable_news,
+        )
         if snapshot:
             snapshots.append(snapshot)
 
@@ -1519,6 +1627,11 @@ def render_backtest_lab(df):
     with col3:
         volume_multiplier = st.number_input("成交量 / 20日均量倍數", min_value=1.0, max_value=5.0, value=1.5, step=0.1)
         require_eps = st.checkbox("最近四季 EPS 合計 > 0", value=False)
+        enable_news = st.checkbox("啟用新聞熱度", value=False, key="backtest_enable_news")
+
+    if enable_news and not get_news_api_key():
+        st.info("尚未設定 NEWS_API_KEY，新聞熱度會顯示為「無近期新聞」，其他回測功能仍可正常使用。")
+        enable_news = False
 
     price_col1, price_col2 = st.columns(2)
     with price_col1:
@@ -1539,6 +1652,7 @@ def render_backtest_lab(df):
         "price_min": price_min,
         "price_max": price_max,
         "require_eps": require_eps,
+        "enable_news": enable_news,
     }
     eps_columns = [col for col in df.columns if "EPS" in str(col).upper()]
     stock_records = tuple(
@@ -1579,6 +1693,7 @@ def render_backtest_lab(df):
     display_df["觸發收盤價"] = display_df["觸發收盤價"].map(lambda value: format_number(value, 2))
     for col in ["5日後報酬率", "10日後報酬率", "20日後報酬率", "觸發後20日內最大漲幅", "觸發後20日內最大回檔"]:
         display_df[col] = display_df[col].map(lambda value: "" if pd.isna(value) else format_signed_pct(value))
+    display_df["news_score"] = display_df["news_score"].map(lambda value: format_number(value, 0))
 
     st.markdown("### 回測結果")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -1593,13 +1708,18 @@ def render_market_temperature(df):
         st.info("目前沒有股票資料可統計。")
         return
 
+    enable_news = st.checkbox("啟用新聞熱度", value=False, key="temperature_enable_news")
+    if enable_news and not get_news_api_key():
+        st.info("尚未設定 NEWS_API_KEY，新聞熱度會顯示為「無近期新聞」，市場溫度仍可正常計算。")
+        enable_news = False
+
     stock_records = tuple(
         (str(row["股票代號"]), str(row["股票名稱"]))
         for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
     )
 
     with st.spinner("正在統計市場溫度..."):
-        stats, snapshot_df, group_rank = build_market_temperature(stock_records)
+        stats, snapshot_df, group_rank = build_market_temperature(stock_records, enable_news=enable_news)
 
     if not stats:
         st.info("目前日 K 資料不足，無法計算市場溫度。")
@@ -1640,7 +1760,18 @@ def render_market_temperature(df):
         }
         display_snapshot = display_snapshot.rename(columns=rename_map)
         st.dataframe(
-            display_snapshot[["股票代號", "股票名稱", *rename_map.values()]],
+            display_snapshot[
+                [
+                    "股票代號",
+                    "股票名稱",
+                    *rename_map.values(),
+                    "新聞熱度",
+                    "news_count",
+                    "positive_keywords",
+                    "risk_keywords",
+                    "news_score",
+                ]
+            ],
             use_container_width=True,
             hide_index=True,
         )
