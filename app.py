@@ -1457,15 +1457,24 @@ def build_market_temperature(stock_records, enable_news=False):
         "股價30元以下且轉強": int(snapshot_df["under30_turning"].sum()),
     }
 
+    bull_ratio = stats["5MA > 10MA > 20MA"] / total
+    high20_ratio = stats["收盤創20日高"] / total
+    high60_ratio = stats["收盤創60日高"] / total
+    volume_ratio = stats["成交量大於20日均量1.5倍"] / total
+    limit_up_ratio = stats["漲停家數"] / total
+    limit_down_ratio = stats["跌停家數"] / total
+    low_price_strong_ratio = stats["股價30元以下且轉強"] / total
+
     score = (
-        stats["5MA > 10MA > 20MA"] / total * 25
-        + stats["收盤創20日高"] / total * 20
-        + stats["收盤創60日高"] / total * 20
-        + stats["成交量大於20日均量1.5倍"] / total * 15
-        + max(stats["漲停家數"] - stats["跌停家數"], 0) / total * 10
-        + stats["股價30元以下且轉強"] / total * 10
+        bull_ratio * 25
+        + high20_ratio * 20
+        + high60_ratio * 20
+        + volume_ratio * 15
+        + limit_up_ratio * 15
+        + low_price_strong_ratio * 5
+        - limit_down_ratio * 20
     )
-    stats["市場溫度分數"] = round(min(max(score, 0), 100), 1)
+    stats["市場溫度分數"] = round(max(0, min(100, score)), 1)
     stats["市場狀態"] = market_temperature_state(stats["市場溫度分數"])
 
     group_rank = pd.DataFrame()
