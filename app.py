@@ -1703,6 +1703,30 @@ def market_temperature_state(score):
     return "過熱"
 
 
+def trend_structure_state(score):
+    """Map the moving-average breadth score to a trend-structure label."""
+    if score >= 70:
+        return "偏多"
+    if score >= 50:
+        return "轉強"
+    if score >= 30:
+        return "中性"
+    return "偏弱"
+
+
+def market_temperature_summary(trend_state, attack_state):
+    """Explain the two-layer observation-pool reading in plain language."""
+    if trend_state == "偏多" and attack_state in ["極冷", "偏冷"]:
+        return "結構偏多，攻擊尚未全面升溫"
+    if trend_state in ["偏多", "轉強"] and attack_state in ["偏熱", "過熱"]:
+        return "結構轉強，攻擊溫度偏高"
+    if trend_state in ["偏弱", "中性"] and attack_state in ["偏熱", "過熱"]:
+        return "短線攻擊偏熱，但結構尚未全面轉強"
+    if trend_state == "偏弱" and attack_state in ["極冷", "偏冷"]:
+        return "結構偏弱，攻擊也偏冷"
+    return "結構與攻擊溫度大致同步"
+
+
 def group_heat_level(strong_ratio):
     """Translate group strong-ratio percentage into a fire-level label."""
     if strong_ratio >= 80:
@@ -1741,6 +1765,11 @@ def build_market_temperature(stock_records, enable_news=False):
             "股價30元以下且轉強": 0,
             "觀察池溫度分數": 0,
             "觀察池狀態": market_temperature_state(0),
+            "趨勢結構分數": 0,
+            "趨勢結構狀態": trend_structure_state(0),
+            "攻擊溫度分數": 0,
+            "攻擊溫度狀態": market_temperature_state(0),
+            "綜合判斷": "目前沒有可統計股票",
         }
         return stats, pd.DataFrame(), pd.DataFrame()
 
@@ -1764,10 +1793,13 @@ def build_market_temperature(stock_records, enable_news=False):
     limit_down_ratio = stats["跌停家數"] / total
     low_price_strong_ratio = stats["股價30元以下且轉強"] / total
 
-    # 觀察池溫度公式：
+    # 趨勢結構公式：只看觀察池中多頭排列的比例，讓「結構是否偏多」獨立呈現。
+    trend_score = bull_ratio * 100
+
+    # 攻擊溫度公式：
     # 各訊號先除以 total 轉成比例，再乘上百分制權重；最後限制在 0～100。
     # 注意：權重本身已是百分制，所以這裡不再額外 * 100。
-    score = (
+    attack_score = (
         bull_ratio * 25
         + high20_ratio * 20
         + high60_ratio * 20
@@ -1776,8 +1808,13 @@ def build_market_temperature(stock_records, enable_news=False):
         + low_price_strong_ratio * 5
         - limit_down_ratio * 20
     )
-    stats["觀察池溫度分數"] = round(max(0, min(100, score)), 1)
-    stats["觀察池狀態"] = market_temperature_state(stats["觀察池溫度分數"])
+    stats["趨勢結構分數"] = round(max(0, min(100, trend_score)), 1)
+    stats["趨勢結構狀態"] = trend_structure_state(stats["趨勢結構分數"])
+    stats["攻擊溫度分數"] = round(max(0, min(100, attack_score)), 1)
+    stats["攻擊溫度狀態"] = market_temperature_state(stats["攻擊溫度分數"])
+    stats["觀察池溫度分數"] = stats["攻擊溫度分數"]
+    stats["觀察池狀態"] = stats["攻擊溫度狀態"]
+    stats["綜合判斷"] = market_temperature_summary(stats["趨勢結構狀態"], stats["攻擊溫度狀態"])
 
     group_rank = pd.DataFrame()
     group_df = load_group_data()
@@ -2292,8 +2329,14 @@ def render_market_temperature(df):
     with st.spinner("正在統計觀察池溫度..."):
         stats, snapshot_df, group_rank = build_market_temperature(stock_records, enable_news=enable_news)
 
-    st.metric("觀察池溫度分數", f"{stats['觀察池溫度分數']:.1f} / 100", stats["觀察池狀態"])
-    st.caption(f"觀察池狀態：{stats['觀察池狀態']}，此分數只代表目前 Deep Trend 觀察清單，不代表全市場。")
+    trend_col, attack_col = st.columns(2)
+    with trend_col:
+        st.metric("趨勢結構分數", f"{stats['趨勢結構分數']:.1f} / 100", stats["趨勢結構狀態"])
+    with attack_col:
+        st.metric("攻擊溫度分數", f"{stats['攻擊溫度分數']:.1f} / 100", stats["攻擊溫度狀態"])
+    st.caption(
+        f"觀察池判斷：{stats['綜合判斷']}。趨勢結構看多頭排列比例；攻擊溫度看創高、量增、漲跌停與低價轉強。此分數只代表目前 Deep Trend 觀察清單，不代表全市場。"
+    )
 
     metric_items = [
         ("統計股票數", stats["統計股票數"]),
