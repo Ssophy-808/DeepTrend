@@ -29,13 +29,15 @@
 #    - 顯示更新按鈕、篩選條件與主功能選單。
 #    - 依選單切換股票雷達、排行榜、掃描、個股查詢與回測實驗室。
 
-import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from textwrap import dedent
+from urllib.parse import quote_plus
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -1205,17 +1207,11 @@ RISK_NEWS_KEYWORDS = [
 ]
 
 
-def get_news_api_key():
-    try:
-        return st.secrets.get("NEWS_API_KEY") or os.environ.get("NEWS_API_KEY", "")
-    except Exception:
-        return os.environ.get("NEWS_API_KEY", "")
-
-
 def empty_news_signal():
     return {
         "新聞熱度": "無近期新聞",
         "news_count": 0,
+        "news_titles": "無近期新聞",
         "positive_keywords": "無",
         "risk_keywords": "無",
         "news_score": 0,
@@ -1223,35 +1219,31 @@ def empty_news_signal():
 
 
 @st.cache_data(ttl=3600)
-def fetch_recent_news_titles(ticker, name, api_key):
-    if not api_key:
-        return []
-
+def fetch_recent_news_titles(ticker, name):
     code = str(ticker).split(".")[0]
-    query = f'"{name}" OR "{code}"'
-    from_date = (date.today() - timedelta(days=7)).isoformat()
+    query = quote_plus(f"{name} {code} 台股")
+    url = f"https://news.google.com/rss/search?q={query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    cutoff = datetime.now() - timedelta(days=7)
 
     try:
-        response = requests.get(
-            "https://newsapi.org/v2/everything",
-            params={
-                "q": query,
-                "from": from_date,
-                "language": "zh",
-                "sortBy": "publishedAt",
-                "pageSize": 20,
-                "apiKey": api_key,
-            },
-            timeout=8,
-        )
-        payload = response.json()
-        if response.status_code != 200 or payload.get("status") != "ok":
+        response = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status_code != 200:
             return []
-        return [
-            str(article.get("title", "")).strip()
-            for article in payload.get("articles", [])
-            if str(article.get("title", "")).strip()
-        ]
+        root = ET.fromstring(response.content)
+        titles = []
+        for item in root.findall(".//item"):
+            title = (item.findtext("title") or "").strip()
+            pub_date_text = (item.findtext("pubDate") or "").strip()
+            if not title:
+                continue
+            try:
+                pub_date = parsedate_to_datetime(pub_date_text).replace(tzinfo=None)
+                if pub_date < cutoff:
+                    continue
+            except Exception:
+                pass
+            titles.append(title)
+        return titles[:20]
     except Exception:
         return []
 
@@ -1260,7 +1252,7 @@ def analyze_stock_news(ticker, name, enable_news=False):
     if not enable_news:
         return empty_news_signal()
 
-    titles = fetch_recent_news_titles(ticker, name, get_news_api_key())
+    titles = fetch_recent_news_titles(ticker, name)
     if not titles:
         return empty_news_signal()
 
@@ -1272,6 +1264,7 @@ def analyze_stock_news(ticker, name, enable_news=False):
     return {
         "新聞熱度": f"{score}/10（{len(titles)}則）",
         "news_count": len(titles),
+        "news_titles": "｜".join(titles[:5]),
         "positive_keywords": "、".join(positive_hits) if positive_hits else "無",
         "risk_keywords": "、".join(risk_hits) if risk_hits else "無",
         "news_score": score,
@@ -1796,10 +1789,6 @@ def render_backtest_lab(df):
     with col4:
         max_stock_label = st.selectbox("最多回測股票數", ["10", "20", "30", "全部"], index=1)
 
-    if enable_news and not get_news_api_key():
-        st.info("尚未設定 NEWS_API_KEY，新聞熱度會顯示為「無近期新聞」，其他回測功能仍可正常使用。")
-        enable_news = False
-
     price_col1, price_col2 = st.columns(2)
     with price_col1:
         price_min = st.number_input("股價下限", min_value=0.0, value=5.0, step=1.0)
@@ -1937,10 +1926,6 @@ def render_market_temperature(df):
         return
 
     enable_news = st.checkbox("啟用新聞熱度", value=False, key="temperature_enable_news")
-    if enable_news and not get_news_api_key():
-        st.info("尚未設定 NEWS_API_KEY，新聞熱度會顯示為「無近期新聞」，市場溫度仍可正常計算。")
-        enable_news = False
-
     stock_records = tuple(
         (str(row["股票代號"]), str(row["股票名稱"]))
         for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
@@ -1996,6 +1981,7 @@ def render_market_temperature(df):
                     *rename_map.values(),
                     "新聞熱度",
                     "news_count",
+                    "news_titles",
                     "positive_keywords",
                     "risk_keywords",
                     "news_score",
