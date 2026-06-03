@@ -1404,6 +1404,8 @@ def run_breakout_backtest_for_stock(row, settings):
     price_min = settings["price_min"]
     price_max = settings["price_max"]
     volume_multiplier = settings["volume_multiplier"]
+    cooldown_days = int(settings.get("cooldown_days", 20))
+    last_trigger_index = None
     news_signal = analyze_stock_news(ticker, name, enable_news=settings.get("enable_news", False))
 
     # 新版回測進場公式：
@@ -1412,6 +1414,9 @@ def run_breakout_backtest_for_stock(row, settings):
     # 3. 觸發後只追蹤固定 5/10/20 日報酬與 20 日內風險/潛力。
     start_index = max(breakout_days, 120 if settings.get("require_above_ma120") else 20)
     for index in range(start_index, len(history) - 20):
+        if last_trigger_index is not None and index <= last_trigger_index + cooldown_days:
+            continue
+
         current = history.loc[index]
         close = current["收盤價"]
         previous_high_col = "最高價" if breakout_method == "盤中創高" else "收盤價"
@@ -1429,7 +1434,16 @@ def run_breakout_backtest_for_stock(row, settings):
         if settings.get("require_above_ma120") and not (pd.notna(current["MA120"]) and close > current["MA120"]):
             continue
 
+        return_5d = calc_forward_return(history, index, 5)
+        return_10d = calc_forward_return(history, index, 10)
+        return_20d = calc_forward_return(history, index, 20)
+        if return_5d is None or return_10d is None or return_20d is None:
+            continue
+
         forward_20 = history.loc[index + 1 : index + 20]
+        if forward_20.empty or len(forward_20) < 20:
+            continue
+
         max_rise = (forward_20["最高價"].max() - close) / close * 100 if not forward_20.empty else None
         max_pullback = (forward_20["最低價"].min() - close) / close * 100 if not forward_20.empty else None
         max_high_20 = forward_20["最高價"].max() if not forward_20.empty else None
@@ -1440,9 +1454,9 @@ def run_breakout_backtest_for_stock(row, settings):
                 "股票名稱": name,
                 "觸發日期": current["日期"],
                 "觸發收盤價": round(float(close), 2),
-                "5日後報酬率": calc_forward_return(history, index, 5),
-                "10日後報酬率": calc_forward_return(history, index, 10),
-                "20日後報酬率": calc_forward_return(history, index, 20),
+                "5日後報酬率": return_5d,
+                "10日後報酬率": return_10d,
+                "20日後報酬率": return_20d,
                 "幾天後跌破5日線": days_until_break_ma5(history, index, max_days=20),
                 "20日內最高價": round(float(max_high_20), 2) if pd.notna(max_high_20) else None,
                 "觸發後20日內最大漲幅": round(float(max_rise), 2) if pd.notna(max_rise) else None,
@@ -1450,6 +1464,7 @@ def run_breakout_backtest_for_stock(row, settings):
                 **news_signal,
             }
         )
+        last_trigger_index = index
 
     return results
 
@@ -1461,6 +1476,94 @@ def build_breakout_backtest(stock_records, settings):
     for record in stock_records:
         row = pd.Series({"股票代號": record[0], "股票名稱": record[1], "EPS合計": record[2]})
         rows.extend(run_breakout_backtest_for_stock(row, settings))
+    return pd.DataFrame(rows)
+
+
+def summarize_breakout_result(result_df):
+    """Summarize breakout backtest rows while safely handling empty results and missing columns."""
+    if result_df.empty:
+        return {
+            "總訊號數": 0,
+            "獨立股票數": 0,
+            "平均每檔股票觸發次數": 0,
+            "5日後上漲機率": "",
+            "10日後上漲機率": "",
+            "20日後上漲機率": "",
+            "5日平均報酬率": "",
+            "10日平均報酬率": "",
+            "20日平均報酬率": "",
+            "20日內平均最大漲幅": "",
+            "20日內平均最大回檔": "",
+        }
+
+    total_signals = len(result_df)
+    unique_stocks = result_df["股票代號"].nunique() if "股票代號" in result_df.columns else 0
+    avg_triggers = total_signals / unique_stocks if unique_stocks else 0
+
+    def numeric_column(column):
+        if column not in result_df.columns:
+            return pd.Series(dtype="float64")
+        return pd.to_numeric(result_df[column], errors="coerce")
+
+    return_5d = numeric_column("5日後報酬率")
+    return_10d = numeric_column("10日後報酬率")
+    return_20d = numeric_column("20日後報酬率")
+    max_gain = numeric_column("觸發後20日內最大漲幅")
+    max_drawdown = numeric_column("觸發後20日內最大回檔")
+
+    return {
+        "總訊號數": total_signals,
+        "獨立股票數": unique_stocks,
+        "平均每檔股票觸發次數": round(avg_triggers, 2),
+        "5日後上漲機率": f"{(return_5d > 0).mean() * 100:.1f}%" if not return_5d.empty else "",
+        "10日後上漲機率": f"{(return_10d > 0).mean() * 100:.1f}%" if not return_10d.empty else "",
+        "20日後上漲機率": f"{(return_20d > 0).mean() * 100:.1f}%" if not return_20d.empty else "",
+        "5日平均報酬率": format_signed_pct(return_5d.mean()),
+        "10日平均報酬率": format_signed_pct(return_10d.mean()),
+        "20日平均報酬率": format_signed_pct(return_20d.mean()),
+        "20日內平均最大漲幅": format_signed_pct(max_gain.mean()),
+        "20日內平均最大回檔": format_signed_pct(max_drawdown.mean()),
+    }
+
+
+def build_strategy_comparison(stock_records, base_settings, eps_available):
+    """Compare common breakout condition sets using the current stock list and cached price history."""
+    variants = [
+        ("A. 只突破高點", {"require_ma_alignment": False, "require_volume": False, "require_eps": False}),
+        ("B. 突破高點 + 均線多頭", {"require_ma_alignment": True, "require_volume": False, "require_eps": False}),
+        ("C. 突破高點 + 均線多頭 + 量增", {"require_ma_alignment": True, "require_volume": True, "require_eps": False}),
+        ("D. 突破高點 + 均線多頭 + 量增 + EPS > 0", {"require_ma_alignment": True, "require_volume": True, "require_eps": True}),
+    ]
+
+    rows = []
+    for strategy_name, overrides in variants:
+        if overrides.get("require_eps") and not eps_available:
+            rows.append({"策略名稱": strategy_name, "備註": "EPS資料不足，無法比較"})
+            continue
+
+        variant_settings = dict(base_settings)
+        variant_settings.update(overrides)
+        variant_settings["enable_news"] = False
+        variant_settings["strategy_variant"] = strategy_name
+        variant_result = build_breakout_backtest(stock_records, variant_settings)
+        summary = summarize_breakout_result(variant_result)
+        rows.append(
+            {
+                "策略名稱": strategy_name,
+                "總訊號數": summary["總訊號數"],
+                "獨立股票數": summary["獨立股票數"],
+                "5日後上漲機率": summary["5日後上漲機率"],
+                "10日後上漲機率": summary["10日後上漲機率"],
+                "20日後上漲機率": summary["20日後上漲機率"],
+                "5日平均報酬率": summary["5日平均報酬率"],
+                "10日平均報酬率": summary["10日平均報酬率"],
+                "20日平均報酬率": summary["20日平均報酬率"],
+                "20日內平均最大漲幅": summary["20日內平均最大漲幅"],
+                "20日內平均最大回檔": summary["20日內平均最大回檔"],
+                "備註": "",
+            }
+        )
+
     return pd.DataFrame(rows)
 
 
@@ -1779,6 +1882,8 @@ def build_backtest_record_df(result_df, settings, strategy_name, run_time):
             "price_max": settings["price_max"],
             "require_eps_positive": settings["require_eps"],
             "require_above_120ma": settings.get("require_above_ma120", False),
+            "cooldown_days": settings.get("cooldown_days", 20),
+            "strategy_variant": settings.get("strategy_variant", strategy_name),
             "return_5d": result_df["5日後報酬率"],
             "return_10d": result_df["10日後報酬率"],
             "return_20d": result_df["20日後報酬率"],
@@ -1919,6 +2024,7 @@ def render_backtest_lab(df):
         enable_news = st.checkbox("啟用新聞熱度", value=False, key="backtest_enable_news")
     with col4:
         max_stock_label = st.selectbox("最多回測股票數", ["10", "20", "30", "全部"], index=1)
+        cooldown_days = st.selectbox("同股票訊號冷卻期", [0, 5, 10, 20, 30], index=3, format_func=lambda value: f"{value}日")
 
     price_col1, price_col2 = st.columns(2)
     with price_col1:
@@ -1956,8 +2062,10 @@ def render_backtest_lab(df):
         "price_max": price_max,
         "require_eps": require_eps,
         "enable_news": enable_news,
+        "cooldown_days": cooldown_days,
+        "strategy_variant": "自訂策略",
     }
-    eps_columns = all_eps_columns if require_eps else []
+    eps_columns = all_eps_columns
     unique_stocks = df[["股票代號", "股票名稱", *eps_columns]].drop_duplicates(subset=["股票代號"])
     if max_stock_label != "全部":
         unique_stocks = unique_stocks.head(int(max_stock_label))
@@ -1986,45 +2094,68 @@ def render_backtest_lab(df):
         - 半年線條件：{"需要收盤價站上 MA120" if require_above_ma120 else "不要求"}。
         - 股價區間：{price_min:.2f} ~ {price_max:.2f}。
         - EPS 條件：{"最近四季 EPS 合計 > 0" if require_eps else "不要求或目前無 EPS 欄位"}。
+        - 同股票訊號冷卻期：{cooldown_days} 個交易日。
         """
     )
 
     if result_df.empty:
         st.info("這組條件目前沒有找到可完成 20 日追蹤的歷史觸發紀錄。")
         st.info("本次沒有符合條件的結果，未建立紀錄檔")
-        render_backtest_record_history()
-        return
-
-    try:
-        record_path, csv_text = save_backtest_record(result_df, settings, strategy_name)
-        if record_path and csv_text:
-            st.success(f"本次回測紀錄已儲存：{record_path}")
-            st.download_button(
-                "下載本次 CSV",
-                data=csv_text.encode("utf-8-sig"),
-                file_name=Path(record_path).name,
-                mime="text/csv",
-            )
-    except Exception as exc:
-        st.error(f"回測紀錄儲存失敗：{exc}")
+    else:
+        try:
+            record_path, csv_text = save_backtest_record(result_df, settings, strategy_name)
+            if record_path and csv_text:
+                st.success(f"本次回測紀錄已儲存：{record_path}")
+                st.download_button(
+                    "下載本次 CSV",
+                    data=csv_text.encode("utf-8-sig"),
+                    file_name=Path(record_path).name,
+                    mime="text/csv",
+                )
+        except Exception as exc:
+            st.error(f"回測紀錄儲存失敗：{exc}")
 
     st.markdown("### 統計摘要")
+    summary = summarize_breakout_result(result_df)
     render_backtest_metric_grid(
         [
-            ("符合次數", len(result_df)),
-            ("5日後上漲機率", f"{(result_df['5日後報酬率'] > 0).mean() * 100:.1f}%"),
-            ("10日後上漲機率", f"{(result_df['10日後報酬率'] > 0).mean() * 100:.1f}%"),
-            ("20日後上漲機率", f"{(result_df['20日後報酬率'] > 0).mean() * 100:.1f}%"),
-            ("5日平均報酬率", format_signed_pct(result_df["5日後報酬率"].mean())),
-            ("10日平均報酬率", format_signed_pct(result_df["10日後報酬率"].mean())),
-            ("20日平均報酬率", format_signed_pct(result_df["20日後報酬率"].mean())),
-            ("20日平均最大漲幅", format_signed_pct(result_df["觸發後20日內最大漲幅"].mean())),
-            ("20日平均最大回檔", format_signed_pct(result_df["觸發後20日內最大回檔"].mean())),
+            ("總訊號數", summary["總訊號數"]),
+            ("獨立股票數", summary["獨立股票數"]),
+            ("平均每檔觸發", summary["平均每檔股票觸發次數"]),
+            ("5日後上漲機率", summary["5日後上漲機率"]),
+            ("10日後上漲機率", summary["10日後上漲機率"]),
+            ("20日後上漲機率", summary["20日後上漲機率"]),
+            ("5日平均報酬率", summary["5日平均報酬率"]),
+            ("10日平均報酬率", summary["10日平均報酬率"]),
+            ("20日平均報酬率", summary["20日平均報酬率"]),
+            ("20日平均最大漲幅", summary["20日內平均最大漲幅"]),
+            ("20日平均最大回檔", summary["20日內平均最大回檔"]),
         ]
     )
 
+    st.markdown("### 條件組合績效比較")
+    with st.spinner("正在比較條件組合績效..."):
+        comparison_df = build_strategy_comparison(stock_records, settings, eps_available=bool(all_eps_columns))
+    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
     st.markdown("### 最大飆股案例")
-    top_runners = result_df.sort_values("觸發後20日內最大漲幅", ascending=False).head(10).copy()
+    top_runner_mode = st.selectbox(
+        "最大飆股案例顯示方式",
+        ["每檔股票只顯示最大漲幅最高的一筆", "顯示全部訊號"],
+        index=0,
+    )
+    if result_df.empty:
+        st.info("目前沒有最大飆股案例可顯示。")
+        render_backtest_record_history()
+        return
+
+    top_runner_source = result_df.copy()
+    if top_runner_mode == "每檔股票只顯示最大漲幅最高的一筆":
+        top_runner_source = top_runner_source.sort_values("觸發後20日內最大漲幅", ascending=False).drop_duplicates(
+            subset=["股票代號"],
+            keep="first",
+        )
+    top_runners = top_runner_source.sort_values("觸發後20日內最大漲幅", ascending=False).head(10).copy()
     top_runners["觸發日期"] = pd.to_datetime(top_runners["觸發日期"]).dt.strftime("%Y-%m-%d")
     top_runners["觸發收盤價"] = top_runners["觸發收盤價"].map(lambda value: format_number(value, 2))
     top_runners["20日內最高價"] = top_runners["20日內最高價"].map(lambda value: format_number(value, 2))
