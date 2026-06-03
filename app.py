@@ -1430,6 +1430,18 @@ def market_temperature_state(score):
     return "過熱"
 
 
+def group_heat_level(strong_ratio):
+    if strong_ratio >= 80:
+        return "🔥🔥🔥🔥🔥"
+    if strong_ratio >= 60:
+        return "🔥🔥🔥🔥"
+    if strong_ratio >= 40:
+        return "🔥🔥🔥"
+    if strong_ratio >= 20:
+        return "🔥🔥"
+    return "🔥"
+
+
 @st.cache_data(ttl=900)
 def build_market_temperature(stock_records, enable_news=False):
     snapshots = []
@@ -1443,7 +1455,19 @@ def build_market_temperature(stock_records, enable_news=False):
 
     snapshot_df = pd.DataFrame(snapshots)
     if snapshot_df.empty:
-        return {}, pd.DataFrame(), pd.DataFrame()
+        stats = {
+            "統計股票數": 0,
+            "5MA > 10MA > 20MA": 0,
+            "收盤創20日高": 0,
+            "收盤創60日高": 0,
+            "成交量大於20日均量1.5倍": 0,
+            "漲停家數": 0,
+            "跌停家數": 0,
+            "股價30元以下且轉強": 0,
+            "觀察池溫度分數": 0,
+            "觀察池狀態": market_temperature_state(0),
+        }
+        return stats, pd.DataFrame(), pd.DataFrame()
 
     total = len(snapshot_df)
     stats = {
@@ -1474,8 +1498,8 @@ def build_market_temperature(stock_records, enable_news=False):
         + low_price_strong_ratio * 5
         - limit_down_ratio * 20
     )
-    stats["市場溫度分數"] = round(max(0, min(100, score)), 1)
-    stats["市場狀態"] = market_temperature_state(stats["市場溫度分數"])
+    stats["觀察池溫度分數"] = round(max(0, min(100, score)), 1)
+    stats["觀察池狀態"] = market_temperature_state(stats["觀察池溫度分數"])
 
     group_rank = pd.DataFrame()
     group_df = load_group_data()
@@ -1489,18 +1513,24 @@ def build_market_temperature(stock_records, enable_news=False):
                 high20_count = int(group_rows_df["high20"].sum())
                 volume_count = int(group_rows_df["volume_surge"].sum())
                 strong_count = ma_count + high20_count + volume_count
+                stock_count = len(group_rows_df)
+                strong_ratio = strong_count / (stock_count * 3) * 100 if stock_count else 0
                 group_rows.append(
                     {
                         "族群": group_name,
-                        "股票數": len(group_rows_df),
+                        "股票數": stock_count,
                         "多頭排列數": ma_count,
                         "創20日高數": high20_count,
                         "量增數": volume_count,
                         "強勢分數": strong_count,
-                        "強勢比例": strong_count / (len(group_rows_df) * 3) * 100,
+                        "強勢比例": strong_ratio,
+                        "熱度等級": group_heat_level(strong_ratio),
                     }
                 )
-            group_rank = pd.DataFrame(group_rows).sort_values(["強勢分數", "強勢比例"], ascending=False)
+            group_rank = pd.DataFrame(group_rows).sort_values(
+                ["強勢比例", "強勢分數", "股票數"],
+                ascending=[False, False, False],
+            )
 
     return stats, snapshot_df, group_rank
 
@@ -1928,7 +1958,7 @@ def render_backtest_lab(df):
 
 
 def render_market_temperature(df):
-    st.subheader("🌡️ 市場溫度計")
+    st.subheader("🌡️ Deep Trend 觀察池溫度")
 
     if df.empty:
         st.info("目前沒有股票資料可統計。")
@@ -1940,15 +1970,11 @@ def render_market_temperature(df):
         for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
     )
 
-    with st.spinner("正在統計市場溫度..."):
+    with st.spinner("正在統計觀察池溫度..."):
         stats, snapshot_df, group_rank = build_market_temperature(stock_records, enable_news=enable_news)
 
-    if not stats:
-        st.info("目前日 K 資料不足，無法計算市場溫度。")
-        return
-
-    st.metric("市場溫度分數", f"{stats['市場溫度分數']:.1f} / 100", stats["市場狀態"])
-    st.caption(f"市場狀態：{stats['市場狀態']}")
+    st.metric("觀察池溫度分數", f"{stats['觀察池溫度分數']:.1f} / 100", stats["觀察池狀態"])
+    st.caption(f"觀察池狀態：{stats['觀察池狀態']}，此分數只代表目前 Deep Trend 觀察清單，不代表全市場。")
 
     metric_items = [
         ("統計股票數", stats["統計股票數"]),
@@ -1962,10 +1988,20 @@ def render_market_temperature(df):
     ]
     render_backtest_metric_grid(metric_items)
 
+    if stats["統計股票數"] == 0:
+        st.info("目前沒有可統計股票。")
+        return
+
     st.markdown("### 強勢族群排行")
     if group_rank.empty:
         st.info("尚無產業分類資料。")
     else:
+        st.markdown("#### 今日最強族群")
+        medals = ["🥇", "🥈", "🥉"]
+        top_groups = group_rank.head(3)
+        for index, (_, row) in enumerate(top_groups.iterrows()):
+            st.markdown(f"{medals[index]} {row['族群']}：{row['強勢比例']:.1f}%")
+
         display_group = group_rank.head(10).copy()
         display_group["強勢比例"] = display_group["強勢比例"].map(lambda value: f"{value:.1f}%")
         st.dataframe(display_group, use_container_width=True, hide_index=True)
@@ -2133,7 +2169,7 @@ view_options = [
     "🚀 強勢排行榜",
     "🔎 個股查詢",
     "🧪 回測實驗室",
-    "🌡️ 市場溫度計",
+    "🌡️ 觀察池溫度",
     "🏆 策略排行榜",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
@@ -2159,7 +2195,7 @@ elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
-elif active_view == "🌡️ 市場溫度計":
+elif active_view == "🌡️ 觀察池溫度":
     render_market_temperature(df)
 else:
     render_strategy_rank(df)
