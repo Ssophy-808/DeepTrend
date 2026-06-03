@@ -1149,6 +1149,10 @@ def prepare_breakout_history(history):
     if history.empty:
         return pd.DataFrame()
 
+    required_columns = {"日期", "收盤價", "最高價", "最低價", "成交量"}
+    if not required_columns.issubset(history.columns):
+        return pd.DataFrame()
+
     prepared = history.copy().sort_values("日期").reset_index(drop=True)
     for col in ["收盤價", "最高價", "最低價", "成交量"]:
         prepared[col] = pd.to_numeric(prepared[col], errors="coerce")
@@ -1158,6 +1162,15 @@ def prepare_breakout_history(history):
     prepared["MA20"] = prepared["收盤價"].rolling(20).mean()
     prepared["20日均量"] = prepared["成交量"].rolling(20).mean()
     return prepared.dropna(subset=["日期", "收盤價"]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=900)
+def get_market_temperature_history(ticker):
+    history = get_official_daily_history(ticker, month_count=6)
+    history = prepare_breakout_history(history)
+    if history.empty:
+        return history
+    return history.tail(120).reset_index(drop=True)
 
 
 POSITIVE_NEWS_KEYWORDS = [
@@ -1273,6 +1286,11 @@ def get_eps_value(row):
     return float(values.dropna().sum())
 
 
+@st.cache_data(ttl=3600)
+def get_eps_columns(columns):
+    return [col for col in columns if "EPS" in str(col).upper()]
+
+
 def days_until_break_ma5(history, start_index, max_days=20):
     for offset in range(1, max_days + 1):
         check_index = start_index + offset
@@ -1364,11 +1382,10 @@ def build_breakout_backtest(stock_records, settings):
     return pd.DataFrame(rows)
 
 
-def latest_market_snapshot(row, month_count=4, enable_news=False):
+def latest_market_snapshot(row, enable_news=False):
     ticker = str(row["股票代號"])
     name = str(row["股票名稱"])
-    history = get_official_daily_history(ticker, month_count=month_count)
-    history = prepare_breakout_history(history)
+    history = get_market_temperature_history(ticker)
 
     if history.empty or len(history) < 61:
         return None
@@ -1444,7 +1461,7 @@ def build_market_temperature(stock_records, enable_news=False):
     stats["市場狀態"] = market_temperature_state(stats["市場溫度分數"])
 
     group_rank = pd.DataFrame()
-    group_df = load_group_file()
+    group_df = load_group_data()
     if not group_df.empty:
         snapshot_df["股票代號_key"] = snapshot_df["股票代號"].map(stock_code_key)
         merged = group_df.merge(snapshot_df, on="股票代號_key", how="inner")
@@ -1617,7 +1634,7 @@ def render_backtest_lab(df):
 
     st.caption("依條件掃描目前清單股票的歷史觸發點，並統計觸發後 5 / 10 / 20 日表現。")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         period_label = st.selectbox("回測期間", ["1年", "3年"], index=1)
         breakout_days = st.selectbox("突破幾日高點", [5, 20, 60], index=1)
@@ -1628,6 +1645,8 @@ def render_backtest_lab(df):
         volume_multiplier = st.number_input("成交量 / 20日均量倍數", min_value=1.0, max_value=5.0, value=1.5, step=0.1)
         require_eps = st.checkbox("最近四季 EPS 合計 > 0", value=False)
         enable_news = st.checkbox("啟用新聞熱度", value=False, key="backtest_enable_news")
+    with col4:
+        max_stock_label = st.selectbox("最多回測股票數", ["10", "20", "30", "全部"], index=1)
 
     if enable_news and not get_news_api_key():
         st.info("尚未設定 NEWS_API_KEY，新聞熱度會顯示為「無近期新聞」，其他回測功能仍可正常使用。")
@@ -1639,7 +1658,8 @@ def render_backtest_lab(df):
     with price_col2:
         price_max = st.number_input("股價上限", min_value=1.0, value=1000.0, step=10.0)
 
-    if require_eps and not any("EPS" in str(col).upper() for col in df.columns):
+    all_eps_columns = get_eps_columns(tuple(df.columns))
+    if require_eps and not all_eps_columns:
         st.warning("目前資料表沒有 EPS 欄位，EPS 條件會先略過；之後若補進 EPS 資料即可啟用。")
         require_eps = False
 
@@ -1654,14 +1674,18 @@ def render_backtest_lab(df):
         "require_eps": require_eps,
         "enable_news": enable_news,
     }
-    eps_columns = [col for col in df.columns if "EPS" in str(col).upper()]
+    eps_columns = all_eps_columns if require_eps else []
+    unique_stocks = df[["股票代號", "股票名稱", *eps_columns]].drop_duplicates(subset=["股票代號"])
+    if max_stock_label != "全部":
+        unique_stocks = unique_stocks.head(int(max_stock_label))
+
     stock_records = tuple(
         (
             str(row["股票代號"]),
             str(row["股票名稱"]),
             get_eps_value(row[["股票代號", "股票名稱", *eps_columns]]) if eps_columns else None,
         )
-        for _, row in df[["股票代號", "股票名稱", *eps_columns]].drop_duplicates(subset=["股票代號"]).iterrows()
+        for _, row in unique_stocks.iterrows()
     )
 
     with st.spinner("正在掃描歷史觸發點..."):
@@ -1671,6 +1695,7 @@ def render_backtest_lab(df):
     st.markdown(
         f"""
         - 收盤價突破前 {breakout_days} 日收盤高點。
+        - 本次回測股票數：{len(stock_records)} 檔（預設限制 20 檔，避免網站過慢）。
         - 多頭排列：{"需要" if require_ma_alignment else "不要求"}。
         - 成交量條件：{"成交量 > 20日均量 " + f"{volume_multiplier:.1f}" + " 倍" if require_volume else "不要求"}。
         - 股價區間：{price_min:.2f} ~ {price_max:.2f}。
@@ -1695,8 +1720,8 @@ def render_backtest_lab(df):
         display_df[col] = display_df[col].map(lambda value: "" if pd.isna(value) else format_signed_pct(value))
     display_df["news_score"] = display_df["news_score"].map(lambda value: format_number(value, 0))
 
-    st.markdown("### 回測結果")
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    with st.expander("查看回測明細（最多顯示前 200 筆）"):
+        st.dataframe(display_df.head(200), use_container_width=True, hide_index=True)
 
     st.caption("報酬率未扣除手續費、交易稅、滑價與股利；歷史觸發不代表未來保證重演。")
 
