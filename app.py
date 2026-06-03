@@ -62,6 +62,7 @@ from plotly.subplots import make_subplots
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
 GROUP_FILE = BASE_DIR / "groups.csv"
+GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
 BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -453,6 +454,84 @@ def group_heat_status(heat_score, bullish_ratio, member_count):
     return "⚠️ 轉弱"
 
 
+def load_group_heat_history():
+    """Load previously saved daily group heat snapshots."""
+    if not GROUP_HEAT_HISTORY_FILE.exists():
+        return pd.DataFrame()
+
+    try:
+        history_df = pd.read_csv(GROUP_HEAT_HISTORY_FILE)
+    except Exception:
+        return pd.DataFrame()
+
+    if history_df.empty or "日期" not in history_df.columns or "族群" not in history_df.columns:
+        return pd.DataFrame()
+
+    history_df["日期"] = pd.to_datetime(history_df["日期"], errors="coerce")
+    history_df["熱度分數"] = pd.to_numeric(history_df.get("熱度分數"), errors="coerce")
+    return history_df.dropna(subset=["日期", "族群", "熱度分數"])
+
+
+def add_group_heat_trend(heat_df):
+    """Add 7-day heat change and warming/cooling labels from saved history."""
+    heat_df = heat_df.copy()
+    heat_df["7日熱度變化"] = pd.NA
+    heat_df["溫度趨勢"] = "資料不足"
+
+    history_df = load_group_heat_history()
+    if history_df.empty:
+        return heat_df
+
+    target_date = pd.Timestamp(date.today() - timedelta(days=7))
+    baseline = history_df[history_df["日期"] <= target_date]
+    if baseline.empty:
+        return heat_df
+
+    baseline = baseline.sort_values("日期").drop_duplicates(subset=["族群"], keep="last")
+    baseline = baseline[["族群", "熱度分數"]].rename(columns={"熱度分數": "7日前熱度分數"})
+    heat_df = heat_df.merge(baseline, on="族群", how="left")
+    heat_df["7日熱度變化"] = heat_df["熱度分數"] - heat_df["7日前熱度分數"]
+    heat_df.loc[heat_df["7日熱度變化"] > 0, "溫度趨勢"] = "升溫中"
+    heat_df.loc[heat_df["7日熱度變化"] < 0, "溫度趨勢"] = "降溫中"
+    heat_df.loc[heat_df["7日熱度變化"] == 0, "溫度趨勢"] = "持平"
+    heat_df.loc[heat_df["7日熱度變化"].isna(), "溫度趨勢"] = "資料不足"
+    return heat_df.drop(columns=["7日前熱度分數"])
+
+
+def save_group_heat_history(heat_df):
+    """Save one daily group heat snapshot, replacing same-day rows to avoid rerun duplicates."""
+    if heat_df.empty:
+        return
+
+    history_columns = [
+        "日期",
+        "族群",
+        "熱度分數",
+        "檔數",
+        "偏多檔數",
+        "強勢檔數",
+        "偏多比例",
+        "今日漲跌幅",
+        "平均乖離率",
+        "法人5日",
+        "外資5日",
+        "投信5日",
+    ]
+    today_text = date.today().isoformat()
+    snapshot = heat_df.copy()
+    snapshot["日期"] = today_text
+    snapshot = snapshot[[col for col in history_columns if col in snapshot.columns]]
+
+    existing = load_group_heat_history()
+    if not existing.empty:
+        existing["日期"] = existing["日期"].dt.strftime("%Y-%m-%d")
+        existing = existing[existing["日期"] != today_text]
+
+    combined = pd.concat([existing, snapshot], ignore_index=True)
+    GROUP_HEAT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(GROUP_HEAT_HISTORY_FILE, index=False, encoding="utf-8-sig")
+
+
 def build_group_heat(df):
     """Aggregate individual stock signals into group-level heat rankings."""
     group_df = load_group_data()
@@ -474,6 +553,9 @@ def build_group_heat(df):
     rows = []
     for group_name, group_rows in merged.groupby("族群"):
         member_count = len(group_rows)
+        if member_count < 3:
+            continue
+
         bullish_mask = group_rows["技術分數"] >= 50
         strong_mask = group_rows["技術分數"] >= 70
         bullish_count = int(bullish_mask.sum())
@@ -501,6 +583,7 @@ def build_group_heat(df):
             heat_score += 8
         elif foreign_5d < 0 and investment_5d < 0:
             heat_score -= 8
+        heat_score = max(0, min(100, heat_score))
 
         top_members = group_rows.sort_values("技術分數", ascending=False).head(4)
         leader_text = "、".join(
@@ -527,7 +610,13 @@ def build_group_heat(df):
             }
         )
 
-    return pd.DataFrame(rows).sort_values(["熱度分數", "偏多比例"], ascending=False)
+    if not rows:
+        return pd.DataFrame()
+
+    heat_df = pd.DataFrame(rows).sort_values(["熱度分數", "偏多比例"], ascending=False)
+    heat_df = add_group_heat_trend(heat_df)
+    save_group_heat_history(heat_df)
+    return heat_df.sort_values(["熱度分數", "偏多比例"], ascending=False)
 
 
 def add_signal_labels(df):
@@ -711,6 +800,10 @@ def render_group_heat(df):
     for index, (_, row) in enumerate(heat_df.head(3).iterrows()):
         change_color = value_color(row["今日漲跌幅"])
         chip_color = value_color(row["法人5日"])
+        trend_color = value_color(row["7日熱度變化"])
+        trend_text = row["溫度趨勢"]
+        if pd.notna(row["7日熱度變化"]):
+            trend_text = f'{trend_text}（{row["7日熱度變化"]:+.1f}）'
         with top_cols[index]:
             html = dedent(
                 f"""
@@ -724,6 +817,7 @@ def render_group_heat(df):
                     <div style="font-size:24px;font-weight:800;color:#ffffff;">{row["族群"]}</div>
                     <div style="margin-top:8px;font-size:15px;color:#d1d5db;">{row["狀態"]}</div>
                     <div style="margin-top:16px;font-size:34px;font-weight:900;color:#ffffff;">{format_number(row["熱度分數"], 1)}</div>
+                    <div style="margin-top:4px;font-size:13px;color:{trend_color};">{trend_text}</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
                         <div style="font-size:13px;color:#9ca3af;">偏多 <b style="color:#ffffff;">{row["偏多檔數"]}/{row["檔數"]}</b></div>
                         <div style="font-size:13px;color:#9ca3af;">今日 <b style="color:{change_color};">{format_signed_pct(row["今日漲跌幅"])}</b></div>
@@ -738,7 +832,7 @@ def render_group_heat(df):
 
     table_df = heat_df.copy()
     table_df["偏多比例"] = table_df["偏多比例"].map(lambda value: f"{value:.0%}")
-    for col in ["熱度分數", "平均技術分數", "今日漲跌幅", "平均乖離率"]:
+    for col in ["熱度分數", "平均技術分數", "今日漲跌幅", "平均乖離率", "7日熱度變化"]:
         table_df[col] = table_df[col].map(lambda value: format_number(value, 2))
     for col in ["法人5日", "外資5日", "投信5日"]:
         table_df[col] = table_df[col].map(format_integer)
