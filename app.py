@@ -1448,6 +1448,7 @@ def render_k_chart(k_df):
     low_series = get_series(k_df, "Low")
     close_series = get_series(k_df, "Close")
     volume_series = get_series(k_df, "Volume")
+    x_values = pd.to_datetime(k_df.index).strftime("%Y-%m-%d")
 
     fig = make_subplots(
         rows=3,
@@ -1459,7 +1460,7 @@ def render_k_chart(k_df):
 
     fig.add_trace(
         go.Candlestick(
-            x=k_df.index,
+            x=x_values,
             open=open_series,
             high=high_series,
             low=low_series,
@@ -1476,7 +1477,7 @@ def render_k_chart(k_df):
 
     for ma_name in ["MA5", "MA10", "MA20"]:
         fig.add_trace(
-            go.Scatter(x=k_df.index, y=k_df[ma_name], mode="lines", name=ma_name),
+            go.Scatter(x=x_values, y=k_df[ma_name], mode="lines", name=ma_name),
             row=1,
             col=1,
         )
@@ -1487,13 +1488,13 @@ def render_k_chart(k_df):
     ]
 
     fig.add_trace(
-        go.Bar(x=k_df.index, y=volume_series, name="成交量（紅漲綠跌）", marker_color=volume_colors),
+        go.Bar(x=x_values, y=volume_series, name="成交量（紅漲綠跌）", marker_color=volume_colors),
         row=2,
         col=1,
     )
 
     fig.add_trace(
-        go.Scatter(x=k_df.index, y=k_df["RSI"], mode="lines", name="RSI", line=dict(color="#facc15")),
+        go.Scatter(x=x_values, y=k_df["RSI"], mode="lines", name="RSI", line=dict(color="#facc15")),
         row=3,
         col=1,
     )
@@ -1505,7 +1506,9 @@ def render_k_chart(k_df):
         height=700,
         xaxis_rangeslider_visible=False,
         showlegend=True,
-        xaxis=dict(rangebreaks=[dict(bounds=["sat", "mon"])]),
+        xaxis=dict(type="category"),
+        xaxis2=dict(type="category"),
+        xaxis3=dict(type="category"),
     )
 
     st.caption("🔴 紅量 = 收漲　🟢 綠量 = 收跌")
