@@ -11,9 +11,14 @@ OUTPUT_DIR = BASE_DIR / "output"
 WATCHLIST_FILE = BASE_DIR / "watchlist.csv"
 CHIP_FILE = BASE_DIR / "chip.csv"
 RESULT_FILE = OUTPUT_DIR / "stock_analysis_result.xlsx"
+HISTORY_FILE = OUTPUT_DIR / "stock_analysis_history.csv"
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def stock_code_key(value):
+    return str(value).strip().split(".")[0]
 
 
 def to_float(value):
@@ -170,6 +175,50 @@ def generate_ai_comment(judgement, technical_reasons, chip_reasons, score):
     return f"風險偏高：{reason_text}。目前不適合積極追蹤，等待結構改善。"
 
 
+def load_previous_scores():
+    if not HISTORY_FILE.exists():
+        return {}
+
+    try:
+        history_df = pd.read_csv(HISTORY_FILE)
+    except Exception:
+        return {}
+
+    required_columns = {"snapshot_date", "股票代號"}
+    if history_df.empty or not required_columns.issubset(history_df.columns):
+        return {}
+
+    score_column = "DeepTrend分數"
+    if score_column not in history_df.columns:
+        return {}
+
+    history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    history_df[score_column] = pd.to_numeric(history_df[score_column], errors="coerce")
+    history_df["股票代號_key"] = history_df["股票代號"].map(stock_code_key)
+    history_df = history_df.dropna(subset=["snapshot_date", score_column])
+
+    today = pd.Timestamp(date.today())
+    previous_df = history_df[history_df["snapshot_date"] < today]
+    if previous_df.empty:
+        return {}
+
+    latest_date = previous_df["snapshot_date"].max()
+    latest_df = previous_df[previous_df["snapshot_date"] == latest_date]
+    return dict(zip(latest_df["股票代號_key"], latest_df[score_column]))
+
+
+def calculate_score_change(current_score, previous_score):
+    if previous_score is None or pd.isna(previous_score):
+        return None, None
+
+    change = current_score - previous_score
+    if previous_score == 0:
+        return round(change, 2), None
+
+    change_rate = change / abs(previous_score) * 100
+    return round(change, 2), round(change_rate, 2)
+
+
 def score_chip(chip_1d, chip_3d, chip_5d, chip_10d, foreign_5d, investment_5d):
     score = 0
     reasons = []
@@ -313,6 +362,7 @@ def classify_score(score):
 def main():
     watchlist = pd.read_csv(WATCHLIST_FILE)
     chip_data = pd.read_csv(CHIP_FILE)
+    previous_scores = load_previous_scores()
     results = []
 
     for _, row in watchlist.iterrows():
@@ -405,7 +455,10 @@ def main():
             avg_volume_5,
             previous_20d_high,
         )
-        score = technical_score + chip_score + volume_price_score
+        score = technical_score * 0.4 + chip_score * 0.4 + volume_price_score * 0.2
+        score = round(score, 2)
+        previous_score = previous_scores.get(stock_code_key(ticker))
+        score_change, score_change_rate = calculate_score_change(score, previous_score)
         technical_reasons = technical_reasons + [
             signal for signal in volume_price_signals if signal != "無明顯異常"
         ]
@@ -441,6 +494,13 @@ def main():
                 "自營商5日": dealer_5d,
                 "自營商10日": dealer_10d,
                 "技術分數": score,
+                "DeepTrend分數": score,
+                "技術面分數": technical_score,
+                "籌碼分數": chip_score,
+                "量價分數": volume_price_score,
+                "前次分數": previous_score,
+                "分數變化": score_change,
+                "分數變化率": score_change_rate,
                 "狀態": status,
                 "綜合判斷": judgement,
                 "技術面": "、".join(technical_reasons),
