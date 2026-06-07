@@ -61,6 +61,7 @@ from plotly.subplots import make_subplots
 
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
+STOCK_ANALYSIS_HISTORY_FILE = BASE_DIR / "output" / "stock_analysis_history.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
 GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
 BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
@@ -425,6 +426,62 @@ def build_stock_label_map(df):
         str(row["股票代號"]): f"{row['股票代號']} {row['股票名稱']}"
         for _, row in label_df.iterrows()
     }
+
+
+@st.cache_data(ttl=600)
+def load_stock_analysis_history():
+    """Load saved DeepTrend daily snapshots for score component comparison."""
+    if not STOCK_ANALYSIS_HISTORY_FILE.exists():
+        return pd.DataFrame()
+
+    try:
+        history_df = pd.read_csv(STOCK_ANALYSIS_HISTORY_FILE)
+    except Exception:
+        return pd.DataFrame()
+
+    if history_df.empty or "snapshot_date" not in history_df.columns or "股票代號" not in history_df.columns:
+        return pd.DataFrame()
+
+    history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    history_df["股票代號_key"] = history_df["股票代號"].map(stock_code_key)
+    return history_df.dropna(subset=["snapshot_date", "股票代號_key"])
+
+
+def build_score_component_change(selected_row):
+    """Build a yesterday/today comparison table for DeepTrend score components."""
+    score_columns = [
+        ("技術面", "技術面分數"),
+        ("籌碼面", "籌碼分數"),
+        ("量價面", "量價分數"),
+    ]
+    today_key = stock_code_key(selected_row["股票代號"])
+    today_values = {
+        label: pd.to_numeric(pd.Series([selected_row.get(column)]), errors="coerce").iloc[0]
+        for label, column in score_columns
+    }
+
+    history_df = load_stock_analysis_history()
+    previous_row = None
+    if not history_df.empty:
+        stock_history = history_df[history_df["股票代號_key"] == today_key].sort_values("snapshot_date")
+        stock_history = stock_history[stock_history["snapshot_date"] < pd.Timestamp(date.today())]
+        needed_columns = [column for _, column in score_columns]
+        if not stock_history.empty and all(column in stock_history.columns for column in needed_columns):
+            previous_row = stock_history.iloc[-1]
+
+    rows = []
+    for label, column in score_columns:
+        previous_value = None if previous_row is None else pd.to_numeric(pd.Series([previous_row.get(column)]), errors="coerce").iloc[0]
+        today_value = today_values[label]
+        rows.append(
+            {
+                "項目": label,
+                "昨天": "" if pd.isna(previous_value) else format_number(previous_value, 2),
+                "今天": "" if pd.isna(today_value) else format_number(today_value, 2),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=600)
@@ -1111,6 +1168,12 @@ def render_detail(filtered_df):
     signal_col1, signal_col2 = st.columns(2)
     signal_col1.metric("均線型態", selected_row.get("均線型態", "中性"))
     signal_col2.metric("突破警報", selected_row.get("突破警報", "無"))
+
+    st.markdown("### 📈 分數組成變化")
+    score_change_df = build_score_component_change(selected_row)
+    st.dataframe(score_change_df, use_container_width=True, hide_index=True)
+    if score_change_df["昨天"].eq("").all():
+        st.caption("目前尚無前一個新版 DeepTrend 快照可比較，累積一天後會顯示昨天分數。")
 
     st.markdown("### 📌 技術面")
     st.info(selected_row["技術面"])
