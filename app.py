@@ -1031,14 +1031,38 @@ def render_scan_table(filtered_df):
 def debug_kline_data(k_df):
     """Print and export recent OHLCV rows used by the K-line chart for inspection."""
     debug_df = k_df.copy().sort_index()
+    original_columns = list(debug_df.columns)
     debug_df = debug_df.reset_index()
-    date_column = "Date" if "Date" in debug_df.columns else debug_df.columns[0]
-    debug_df = debug_df.rename(columns={date_column: "Date"})
 
+    column_aliases = {
+        "Date": ["Date", "Datetime", "日期", "index"],
+        "Open": ["Open", "open", "開盤價", "開盤"],
+        "High": ["High", "high", "最高價", "最高"],
+        "Low": ["Low", "low", "最低價", "最低"],
+        "Close": ["Close", "close", "收盤價", "收盤", "Close_Price"],
+        "Volume": ["Volume", "volume", "成交量"],
+    }
+    column_map = {}
+    for target, aliases in column_aliases.items():
+        matched_column = next((col for col in aliases if col in debug_df.columns), None)
+        if matched_column is None and target == "Date":
+            matched_column = debug_df.columns[0]
+        if matched_column is not None:
+            column_map[matched_column] = target
+
+    debug_df = debug_df.rename(columns=column_map)
     debug_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    missing_columns = [col for col in debug_columns if col not in debug_df.columns]
+    if missing_columns:
+        print("K線 debug 原始欄位：", original_columns)
+        print("K線 debug reset_index 後欄位：", list(debug_df.columns))
+        print("K線 debug 已對應欄位：", column_map)
+        print("K線 debug 缺少欄位：", missing_columns)
+
     available_columns = [col for col in debug_columns if col in debug_df.columns]
     debug_df = debug_df[available_columns]
-    debug_df["Date"] = pd.to_datetime(debug_df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "Date" in debug_df.columns:
+        debug_df["Date"] = pd.to_datetime(debug_df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     print(debug_df.tail(10)[available_columns])
     debug_df.tail(30).to_csv(BASE_DIR / "debug_kline.csv", index=False, encoding="utf-8-sig")
