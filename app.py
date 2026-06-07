@@ -1032,6 +1032,7 @@ def debug_kline_data(k_df):
     """Print and export recent OHLCV rows used by the K-line chart for inspection."""
     debug_df = k_df.copy().sort_index()
     original_columns = list(debug_df.columns)
+    print(debug_df.columns.tolist())
     debug_df = debug_df.reset_index()
 
     column_aliases = {
