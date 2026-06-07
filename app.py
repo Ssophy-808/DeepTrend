@@ -1028,6 +1028,22 @@ def render_scan_table(filtered_df):
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 
+def debug_kline_data(k_df):
+    """Print and export recent OHLCV rows used by the K-line chart for inspection."""
+    debug_df = k_df.copy().sort_index()
+    debug_df = debug_df.reset_index()
+    date_column = "Date" if "Date" in debug_df.columns else debug_df.columns[0]
+    debug_df = debug_df.rename(columns={date_column: "Date"})
+
+    debug_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    available_columns = [col for col in debug_columns if col in debug_df.columns]
+    debug_df = debug_df[available_columns]
+    debug_df["Date"] = pd.to_datetime(debug_df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    print(debug_df.tail(10)[available_columns])
+    debug_df.tail(30).to_csv(BASE_DIR / "debug_kline.csv", index=False, encoding="utf-8-sig")
+
+
 def render_detail(filtered_df):
     """Render single-stock summary cards plus the K-line chart."""
     if filtered_df.empty:
@@ -1101,6 +1117,7 @@ def render_detail(filtered_df):
         st.warning("K線資料不足，無法計算均線與RSI。")
         return
 
+    debug_kline_data(k_df)
     render_k_chart(k_df)
 
 
