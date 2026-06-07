@@ -447,17 +447,132 @@ def load_stock_analysis_history():
     return history_df.dropna(subset=["snapshot_date", "股票代號_key"])
 
 
+def row_number(row, column):
+    """Read a numeric value from a row-like object without raising on missing columns."""
+    try:
+        return pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+    except Exception:
+        return pd.NA
+
+
+def score_change_label(previous_value, today_value):
+    """Format component score difference for the score composition table."""
+    if pd.isna(previous_value) or pd.isna(today_value):
+        return ""
+
+    change = today_value - previous_value
+    return format_signed_pct(change).replace("%", "")
+
+
+def describe_technical_component(today_row, previous_row=None):
+    """Explain technical score changes with concrete MA and breakout conditions."""
+    close = row_number(today_row, "收盤價")
+    ma5 = row_number(today_row, "5日線")
+    ma10 = row_number(today_row, "10日線")
+    ma20 = row_number(today_row, "20日線")
+    high20 = row_number(today_row, "20日高點")
+    low20 = row_number(today_row, "20日低點")
+
+    notes = []
+    if pd.notna(close) and pd.notna(ma5):
+        notes.append("站上5MA" if close > ma5 else "跌破5MA")
+    if pd.notna(ma5) and pd.notna(ma10) and pd.notna(ma20):
+        if ma5 > ma10 > ma20:
+            notes.append("5MA>10MA>20MA 多頭排列")
+        elif ma5 < ma10 < ma20:
+            notes.append("5MA<10MA<20MA 空頭排列")
+        else:
+            notes.append("均線糾結")
+    if pd.notna(close) and pd.notna(high20) and close >= high20:
+        notes.append("突破20日高點")
+    elif pd.notna(close) and pd.notna(high20) and close >= high20 * 0.98:
+        notes.append("接近20日高點")
+    if pd.notna(close) and pd.notna(low20) and close <= low20 * 1.05:
+        notes.append("接近/跌破20日低點")
+
+    if previous_row is not None:
+        prev_close = row_number(previous_row, "收盤價")
+        prev_ma5 = row_number(previous_row, "5日線")
+        if pd.notna(prev_close) and pd.notna(prev_ma5) and pd.notna(close) and pd.notna(ma5):
+            if prev_close > prev_ma5 and close <= ma5:
+                notes.insert(0, "由站上5MA轉為跌破5MA")
+            elif prev_close <= prev_ma5 and close > ma5:
+                notes.insert(0, "由跌破5MA轉為站上5MA")
+
+    return "、".join(notes) if notes else "技術面資料不足"
+
+
+def describe_chip_component(today_row, previous_row=None):
+    """Explain chip score changes with foreign/investment trust and 5-day chip flow."""
+    chip_5d = row_number(today_row, "籌碼5日")
+    foreign_5d = row_number(today_row, "外資5日")
+    investment_5d = row_number(today_row, "投信5日")
+
+    notes = []
+    if pd.notna(chip_5d):
+        if chip_5d > 0:
+            notes.append(f"法人5日買超 {format_integer(chip_5d)}")
+        elif chip_5d < 0:
+            notes.append(f"法人5日賣超 {format_integer(abs(chip_5d))}")
+        else:
+            notes.append("法人5日中性")
+    if pd.notna(foreign_5d) and pd.notna(investment_5d):
+        if foreign_5d > 0 and investment_5d > 0:
+            notes.append("外資、投信同步買超")
+        elif foreign_5d < 0 and investment_5d < 0:
+            notes.append("外資、投信同步賣超")
+        elif foreign_5d > 0 and investment_5d < 0:
+            notes.append("外資買、投信賣")
+        elif foreign_5d < 0 and investment_5d > 0:
+            notes.append("投信買、外資賣")
+
+    if previous_row is not None:
+        prev_chip_5d = row_number(previous_row, "籌碼5日")
+        if pd.notna(prev_chip_5d) and pd.notna(chip_5d):
+            if prev_chip_5d <= 0 < chip_5d:
+                notes.insert(0, "籌碼由賣壓轉買超")
+            elif prev_chip_5d >= 0 > chip_5d:
+                notes.insert(0, "籌碼由買超轉賣壓")
+
+    return "、".join(notes) if notes else "籌碼資料不足"
+
+
+def describe_volume_price_component(today_row, previous_row=None):
+    """Explain volume-price score changes with volume ratio and breakout state."""
+    close = row_number(today_row, "收盤價")
+    ma_volume = row_number(today_row, "5日均量")
+    volume = row_number(today_row, "成交量")
+    high20 = row_number(today_row, "20日高點")
+    signal_text = str(today_row.get("量價異常", ""))
+
+    notes = []
+    if pd.notna(volume) and pd.notna(ma_volume) and ma_volume:
+        volume_ratio = volume / ma_volume
+        if volume_ratio >= 2:
+            notes.append(f"成交量約5日均量 {volume_ratio:.1f} 倍")
+        elif volume_ratio >= 1.5:
+            notes.append(f"量能放大至5日均量 {volume_ratio:.1f} 倍")
+        else:
+            notes.append("量能未明顯放大")
+    if pd.notna(close) and pd.notna(high20) and close >= high20:
+        notes.append("價格突破20日高點")
+    if signal_text and signal_text != "無明顯異常":
+        notes.append(signal_text)
+
+    return "、".join(notes) if notes else "量價無明顯異常"
+
+
 def build_score_component_change(selected_row):
     """Build a yesterday/today comparison table for DeepTrend score components."""
     score_columns = [
-        ("技術面", "技術面分數"),
-        ("籌碼面", "籌碼分數"),
-        ("量價面", "量價分數"),
+        ("技術面", "技術面分數", describe_technical_component),
+        ("籌碼面", "籌碼分數", describe_chip_component),
+        ("量價面", "量價分數", describe_volume_price_component),
     ]
     today_key = stock_code_key(selected_row["股票代號"])
     today_values = {
-        label: pd.to_numeric(pd.Series([selected_row.get(column)]), errors="coerce").iloc[0]
-        for label, column in score_columns
+        label: row_number(selected_row, column)
+        for label, column, _ in score_columns
     }
 
     history_df = load_stock_analysis_history()
@@ -465,19 +580,20 @@ def build_score_component_change(selected_row):
     if not history_df.empty:
         stock_history = history_df[history_df["股票代號_key"] == today_key].sort_values("snapshot_date")
         stock_history = stock_history[stock_history["snapshot_date"] < pd.Timestamp(date.today())]
-        needed_columns = [column for _, column in score_columns]
-        if not stock_history.empty and all(column in stock_history.columns for column in needed_columns):
+        if not stock_history.empty:
             previous_row = stock_history.iloc[-1]
 
     rows = []
-    for label, column in score_columns:
-        previous_value = None if previous_row is None else pd.to_numeric(pd.Series([previous_row.get(column)]), errors="coerce").iloc[0]
+    for label, column, describer in score_columns:
+        previous_value = None if previous_row is None else row_number(previous_row, column)
         today_value = today_values[label]
         rows.append(
             {
                 "項目": label,
                 "昨天": "" if pd.isna(previous_value) else format_number(previous_value, 2),
                 "今天": "" if pd.isna(today_value) else format_number(today_value, 2),
+                "變化": score_change_label(previous_value, today_value),
+                "說明": describer(selected_row, previous_row),
             }
         )
 
