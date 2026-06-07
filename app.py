@@ -251,7 +251,7 @@ def get_official_daily_history(ticker, month_count=3):
 
 
 def official_history_to_kline(history):
-    """Convert official TWSE/TPEX daily rows into yfinance-like OHLCV data for Plotly candlesticks."""
+    """Convert official TWSE/TPEX daily rows into close-line chart data without fake open prices."""
     if history.empty:
         return pd.DataFrame()
 
@@ -271,11 +271,9 @@ def official_history_to_kline(history):
     for col in ["Close", "High", "Low", "Volume"]:
         k_df[col] = pd.to_numeric(k_df[col], errors="coerce")
 
-    k_df["Open"] = k_df["Close"].shift(1)
-    k_df["Open"] = k_df["Open"].fillna(k_df["Close"])
-    k_df = k_df.dropna(subset=["Open", "High", "Low", "Close"])
+    k_df = k_df.dropna(subset=["High", "Low", "Close"])
 
-    return k_df[["Open", "High", "Low", "Close", "Volume"]]
+    return k_df[["High", "Low", "Close", "Volume"]]
 
 
 @st.cache_data(ttl=10)
@@ -1121,17 +1119,18 @@ def render_detail(filtered_df):
     st.success(selected_row["籌碼面"])
 
     symbol = normalize_tw_symbol(selected_stock)
-    history = get_official_daily_history(symbol)
-    k_df = official_history_to_kline(history)
+    k_df = download_market_data(symbol)
+    chart_mode = "candlestick"
 
     if k_df.empty:
-        k_df = download_market_data(symbol)
+        history = get_official_daily_history(symbol)
+        k_df = official_history_to_kline(history)
+        chart_mode = "close_line"
 
     if k_df.empty:
         st.warning(f"抓不到 {symbol} 的K線資料。")
         return
 
-    open_series = get_series(k_df, "Open")
     close_series = get_series(k_df, "Close")
 
     k_df["MA5"] = close_series.rolling(5).mean()
@@ -1152,7 +1151,7 @@ def render_detail(filtered_df):
         return
 
     debug_kline_data(k_df)
-    render_k_chart(k_df)
+    render_k_chart(k_df, chart_mode=chart_mode)
 
 
 def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
@@ -2450,11 +2449,9 @@ def render_market_temperature(df):
         )
 
 
-def render_k_chart(k_df):
+def render_k_chart(k_df, chart_mode="candlestick"):
     """Render candlestick, volume, and RSI subplots with category x-axis spacing."""
-    open_series = get_series(k_df, "Open")
-    high_series = get_series(k_df, "High")
-    low_series = get_series(k_df, "Low")
+    has_real_ohlc = chart_mode == "candlestick" and all(col in k_df.columns for col in ["Open", "High", "Low", "Close"])
     close_series = get_series(k_df, "Close")
     volume_series = get_series(k_df, "Volume")
     x_values = pd.to_datetime(k_df.index).strftime("%Y-%m-%d")
@@ -2467,22 +2464,33 @@ def render_k_chart(k_df):
         row_heights=[0.6, 0.2, 0.2],
     )
 
-    fig.add_trace(
-        go.Candlestick(
-            x=x_values,
-            open=open_series,
-            high=high_series,
-            low=low_series,
-            close=close_series,
-            name="K線",
-            increasing_line_color="#ef4444",
-            increasing_fillcolor="#ef4444",
-            decreasing_line_color="#22c55e",
-            decreasing_fillcolor="#22c55e",
-        ),
-        row=1,
-        col=1,
-    )
+    if has_real_ohlc:
+        open_series = get_series(k_df, "Open")
+        high_series = get_series(k_df, "High")
+        low_series = get_series(k_df, "Low")
+        fig.add_trace(
+            go.Candlestick(
+                x=x_values,
+                open=open_series,
+                high=high_series,
+                low=low_series,
+                close=close_series,
+                name="K線",
+                increasing_line_color="#ef4444",
+                increasing_fillcolor="#ef4444",
+                decreasing_line_color="#22c55e",
+                decreasing_fillcolor="#22c55e",
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(x=x_values, y=close_series, mode="lines", name="收盤價", line=dict(color="#ef4444")),
+            row=1,
+            col=1,
+        )
+        st.caption("目前使用官方資料備援，官方資料缺少真實 Open，因此改以收盤價折線圖顯示。")
 
     for ma_name in ["MA5", "MA10", "MA20"]:
         fig.add_trace(
@@ -2491,10 +2499,17 @@ def render_k_chart(k_df):
             col=1,
         )
 
-    volume_colors = [
-        "#ef4444" if close_series.iloc[i] >= open_series.iloc[i] else "#22c55e"
-        for i in range(len(k_df))
-    ]
+    if has_real_ohlc:
+        volume_colors = [
+            "#ef4444" if close_series.iloc[i] >= open_series.iloc[i] else "#22c55e"
+            for i in range(len(k_df))
+        ]
+    else:
+        prev_close = close_series.shift(1)
+        volume_colors = [
+            "#ef4444" if pd.isna(prev_close.iloc[i]) or close_series.iloc[i] >= prev_close.iloc[i] else "#22c55e"
+            for i in range(len(k_df))
+        ]
 
     fig.add_trace(
         go.Bar(x=x_values, y=volume_series, name="成交量（紅漲綠跌）", marker_color=volume_colors),
