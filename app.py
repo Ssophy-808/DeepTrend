@@ -1065,7 +1065,16 @@ def debug_kline_data(k_df):
         debug_df["Date"] = pd.to_datetime(debug_df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     print(debug_df.tail(10)[available_columns])
-    debug_df.tail(30).to_csv(BASE_DIR / "debug_kline.csv", index=False, encoding="utf-8-sig")
+    debug_path = BASE_DIR / "debug_kline.csv"
+    debug_csv = debug_df.tail(30).to_csv(index=False, encoding="utf-8-sig")
+    debug_path.write_text(debug_csv, encoding="utf-8-sig")
+    st.caption(f"K線 debug 檔已產生：{debug_path}")
+    st.download_button(
+        "下載 debug_kline.csv",
+        data=debug_csv.encode("utf-8-sig"),
+        file_name="debug_kline.csv",
+        mime="text/csv",
+    )
 
 
 def render_detail(filtered_df):
