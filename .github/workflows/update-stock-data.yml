@@ -33,6 +33,9 @@ jobs:
       - name: Generate latest stock analysis
         run: python main.py
 
+      - name: Append stock analysis history
+        run: python update_history.py
+
       - name: Refresh data if remote changed during run
         run: |
           git fetch origin main
@@ -41,10 +44,11 @@ jobs:
             git reset --hard origin/main
             python update_chip.py
             python main.py
+            python update_history.py
           fi
 
       - name: Commit updated data
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "update stock analysis data"
-          file_pattern: chip.csv output/stock_analysis_result.xlsx
+          file_pattern: chip.csv output/stock_analysis_result.xlsx output/stock_analysis_history.csv
