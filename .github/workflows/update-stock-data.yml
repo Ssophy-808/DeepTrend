@@ -51,4 +51,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "update stock analysis data"
-          file_pattern: chip.csv output/stock_analysis_result.xlsx output/stock_analysis_history.csv
+          file_pattern: chip.csv output/chip_daily.csv output/stock_analysis_result.xlsx output/stock_analysis_history.csv
