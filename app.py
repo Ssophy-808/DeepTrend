@@ -62,6 +62,7 @@ from plotly.subplots import make_subplots
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
 STOCK_ANALYSIS_HISTORY_FILE = BASE_DIR / "output" / "stock_analysis_history.csv"
+CHIP_DAILY_FILE = BASE_DIR / "output" / "chip_daily.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
 GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
 BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
@@ -1121,6 +1122,255 @@ def render_stock_radar(filtered_df):
                 args=(stock_code,),
                 use_container_width=True,
             )
+
+@st.cache_data(ttl=600)
+def load_chip_daily_data():
+    """Load daily institutional chip detail used for audit and official-report reconciliation."""
+    if not CHIP_DAILY_FILE.exists():
+        return pd.DataFrame()
+
+    try:
+        chip_df = pd.read_csv(CHIP_DAILY_FILE)
+    except Exception:
+        return pd.DataFrame()
+
+    if "date" not in chip_df.columns or "ticker" not in chip_df.columns:
+        return pd.DataFrame()
+
+    chip_df["date"] = pd.to_datetime(chip_df["date"], errors="coerce")
+    chip_df = chip_df[chip_df["date"].notna()].copy()
+    chip_df["ticker"] = chip_df["ticker"].astype(str).str.strip()
+    chip_df["stock_code"] = chip_df["ticker"].str.split(".").str[0]
+
+    numeric_columns = [
+        "foreign_buy",
+        "foreign_sell",
+        "foreign_net",
+        "foreign_dealer_buy",
+        "foreign_dealer_sell",
+        "foreign_dealer_net",
+        "investment_buy",
+        "investment_sell",
+        "investment_net",
+        "dealer_buy",
+        "dealer_sell",
+        "dealer_net",
+        "dealer_self_buy",
+        "dealer_self_sell",
+        "dealer_self_net",
+        "dealer_hedge_buy",
+        "dealer_hedge_sell",
+        "dealer_hedge_net",
+        "total_net",
+    ]
+    for col in numeric_columns:
+        if col in chip_df.columns:
+            chip_df[col] = pd.to_numeric(chip_df[col], errors="coerce").fillna(0)
+
+    return chip_df.sort_values(["date", "ticker", "source" if "source" in chip_df.columns else "ticker"])
+
+
+def chip_sum(df, column):
+    """Safely sum one chip column when the source file may be missing optional fields."""
+    if column not in df.columns:
+        return 0
+    return int(pd.to_numeric(df[column], errors="coerce").fillna(0).sum())
+
+
+def render_chip_audit(stock_df):
+    """Render an audit page for daily institutional chip data and interval reconciliation."""
+    st.subheader("🧾 籌碼查帳")
+    st.caption("資料來源：output/chip_daily.csv。可用來對照證交所/櫃買中心的週報、月報區間加總。")
+
+    chip_df = load_chip_daily_data()
+    if chip_df.empty:
+        st.warning("目前找不到每日籌碼明細。請先執行 update_chip.py 產生 output/chip_daily.csv。")
+        return
+
+    stock_options = []
+    seen_codes = set()
+    if not stock_df.empty and {"股票代號", "股票名稱"}.issubset(stock_df.columns):
+        for _, row in stock_df[["股票代號", "股票名稱"]].dropna().iterrows():
+            ticker = normalize_tw_symbol(row["股票代號"])
+            code = str(ticker).split(".")[0]
+            if code and code not in seen_codes:
+                stock_options.append((code, f"{ticker} {row['股票名稱']}"))
+                seen_codes.add(code)
+
+    for code, name in (
+        chip_df[["stock_code", "stock_name"]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values("stock_code")
+        .itertuples(index=False, name=None)
+    ):
+        if code not in seen_codes:
+            stock_options.append((str(code), f"{code} {name}"))
+            seen_codes.add(code)
+
+    if not stock_options:
+        st.info("籌碼明細內目前沒有可選股票。")
+        return
+
+    min_date = chip_df["date"].min().date()
+    max_date = chip_df["date"].max().date()
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        selected_label = st.selectbox(
+            "選擇股票",
+            [label for _, label in stock_options],
+            index=0,
+            key="chip_audit_stock",
+        )
+    with col2:
+        start_date = st.date_input("開始日期", value=min_date, min_value=min_date, max_value=max_date)
+    with col3:
+        end_date = st.date_input("結束日期", value=max_date, min_value=min_date, max_value=max_date)
+
+    if start_date > end_date:
+        st.warning("開始日期不能晚於結束日期。")
+        return
+
+    selected_code = stock_options[[label for _, label in stock_options].index(selected_label)][0]
+    selected_df = chip_df[
+        chip_df["stock_code"].eq(selected_code)
+        & (chip_df["date"].dt.date >= start_date)
+        & (chip_df["date"].dt.date <= end_date)
+    ].copy()
+
+    if selected_df.empty:
+        st.info("這個日期區間沒有該股票的籌碼明細。")
+        return
+
+    stock_name = selected_df["stock_name"].dropna().astype(str).iloc[-1] if "stock_name" in selected_df.columns else ""
+    st.markdown(f"### {selected_code} {stock_name}")
+    st.caption(f"區間：{start_date} 至 {end_date}，共 {selected_df['date'].nunique()} 個交易日")
+
+    total_foreign = chip_sum(selected_df, "foreign_net") + chip_sum(selected_df, "foreign_dealer_net")
+    total_investment = chip_sum(selected_df, "investment_net")
+    total_dealer = chip_sum(selected_df, "dealer_net")
+    total_all = chip_sum(selected_df, "total_net")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("外資買賣超", format_integer(total_foreign))
+    m2.metric("投信買賣超", format_integer(total_investment))
+    m3.metric("自營商買賣超", format_integer(total_dealer))
+    m4.metric("三大法人買賣超", format_integer(total_all))
+
+    summary_rows = [
+        {
+            "項目": "外資(不含外資自營商)",
+            "買進": chip_sum(selected_df, "foreign_buy"),
+            "賣出": chip_sum(selected_df, "foreign_sell"),
+            "買賣超": chip_sum(selected_df, "foreign_net"),
+        },
+        {
+            "項目": "外資自營商",
+            "買進": chip_sum(selected_df, "foreign_dealer_buy"),
+            "賣出": chip_sum(selected_df, "foreign_dealer_sell"),
+            "買賣超": chip_sum(selected_df, "foreign_dealer_net"),
+        },
+        {
+            "項目": "投信",
+            "買進": chip_sum(selected_df, "investment_buy"),
+            "賣出": chip_sum(selected_df, "investment_sell"),
+            "買賣超": chip_sum(selected_df, "investment_net"),
+        },
+        {
+            "項目": "自營商自行買賣",
+            "買進": chip_sum(selected_df, "dealer_self_buy"),
+            "賣出": chip_sum(selected_df, "dealer_self_sell"),
+            "買賣超": chip_sum(selected_df, "dealer_self_net"),
+        },
+        {
+            "項目": "自營商避險",
+            "買進": chip_sum(selected_df, "dealer_hedge_buy"),
+            "賣出": chip_sum(selected_df, "dealer_hedge_sell"),
+            "買賣超": chip_sum(selected_df, "dealer_hedge_net"),
+        },
+        {
+            "項目": "自營商合計",
+            "買進": chip_sum(selected_df, "dealer_buy"),
+            "賣出": chip_sum(selected_df, "dealer_sell"),
+            "買賣超": chip_sum(selected_df, "dealer_net"),
+        },
+        {
+            "項目": "三大法人合計",
+            "買進": "",
+            "賣出": "",
+            "買賣超": chip_sum(selected_df, "total_net"),
+        },
+    ]
+    summary_df = pd.DataFrame(summary_rows)
+    for col in ["買進", "賣出", "買賣超"]:
+        summary_df[col] = summary_df[col].map(lambda value: "" if value == "" else format_integer(value))
+
+    st.markdown("#### 區間加總")
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    display_columns = [
+        "date",
+        "ticker",
+        "stock_name",
+        "foreign_buy",
+        "foreign_sell",
+        "foreign_net",
+        "foreign_dealer_net",
+        "investment_net",
+        "dealer_self_net",
+        "dealer_hedge_net",
+        "dealer_net",
+        "total_net",
+        "source",
+    ]
+    display_columns = [col for col in display_columns if col in selected_df.columns]
+    detail_df = selected_df[display_columns].sort_values("date").copy()
+    detail_df["date"] = detail_df["date"].dt.strftime("%Y-%m-%d")
+    detail_df = detail_df.rename(
+        columns={
+            "date": "日期",
+            "ticker": "股票代號",
+            "stock_name": "股票名稱",
+            "foreign_buy": "外資買進",
+            "foreign_sell": "外資賣出",
+            "foreign_net": "外資買賣超",
+            "foreign_dealer_net": "外資自營商買賣超",
+            "investment_net": "投信買賣超",
+            "dealer_self_net": "自營商自行買賣",
+            "dealer_hedge_net": "自營商避險",
+            "dealer_net": "自營商合計",
+            "total_net": "三大法人合計",
+            "source": "來源",
+        }
+    )
+
+    numeric_display_columns = [
+        "外資買進",
+        "外資賣出",
+        "外資買賣超",
+        "外資自營商買賣超",
+        "投信買賣超",
+        "自營商自行買賣",
+        "自營商避險",
+        "自營商合計",
+        "三大法人合計",
+    ]
+    for col in numeric_display_columns:
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].map(format_integer)
+
+    st.markdown("#### 每日明細")
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+    csv_df = selected_df.sort_values("date").copy()
+    csv_df["date"] = csv_df["date"].dt.strftime("%Y-%m-%d")
+    st.download_button(
+        "下載此區間籌碼明細 CSV",
+        data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
+        file_name=f"chip_audit_{selected_code}_{start_date}_{end_date}.csv",
+        mime="text/csv",
+    )
 
 
 def render_scan_table(filtered_df):
@@ -2785,6 +3035,7 @@ view_options = [
     "📋 詳細表格",
     "🚀 強勢排行榜",
     "🔎 個股查詢",
+    "🧾 籌碼查帳",
     "🧪 回測實驗室",
     "🌡️ 觀察池溫度",
     "🏆 策略排行榜",
@@ -2810,6 +3061,8 @@ elif active_view == "🚀 強勢排行榜":
     render_rank(top_strength)
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
+elif active_view == "🧾 籌碼查帳":
+    render_chip_audit(df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
 elif active_view == "🌡️ 觀察池溫度":
