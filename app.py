@@ -3200,12 +3200,12 @@ if keyword:
 
 view_options = [
     "📊 股票雷達",
-    "📋 詳細表格",
-    "🔎 個股查詢",
-    "🧾 籌碼查帳",
     "📈 分數歷史",
-    "🧪 回測實驗室",
+    "🔎 個股查詢",
     "🌡️ 觀察池溫度",
+    "🧪 回測實驗室",
+    "🧾 籌碼查帳",
+    "📋 詳細表格",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
