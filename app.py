@@ -3186,7 +3186,6 @@ with st.container(border=True):
         keyword = st.text_input("搜尋股票名稱或代號")
 
 filtered_df = df.copy()
-top_strength = filtered_df.sort_values(by="乖離率", ascending=False).head(5)
 
 if selected_status != "全部":
     filtered_df = filtered_df[filtered_df["狀態"] == selected_status]
@@ -3201,15 +3200,12 @@ if keyword:
 
 view_options = [
     "📊 股票雷達",
-    "🔥 族群熱度",
     "📋 詳細表格",
-    "🚀 強勢排行榜",
     "🔎 個股查詢",
     "🧾 籌碼查帳",
     "📈 分數歷史",
     "🧪 回測實驗室",
     "🌡️ 觀察池溫度",
-    "🏆 策略排行榜",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
@@ -3224,12 +3220,8 @@ active_view = st.radio(
 
 if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
-elif active_view == "🔥 族群熱度":
-    render_group_heat(df)
 elif active_view == "📋 詳細表格":
     render_scan_table(filtered_df)
-elif active_view == "🚀 強勢排行榜":
-    render_rank(top_strength)
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧾 籌碼查帳":
@@ -3238,7 +3230,5 @@ elif active_view == "📈 分數歷史":
     render_score_history(df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
-elif active_view == "🌡️ 觀察池溫度":
-    render_market_temperature(df)
 else:
-    render_strategy_rank(df)
+    render_market_temperature(df)
