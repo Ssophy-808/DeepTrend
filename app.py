@@ -1820,8 +1820,18 @@ def render_score_validation(stock_df):
     st.markdown("### 驗證摘要")
     st.dataframe(summary_display, use_container_width=True, hide_index=True)
 
+    max_sample_count = int(pd.to_numeric(summary_df["有效樣本數"], errors="coerce").fillna(0).max())
+    if max_sample_count < 10:
+        st.warning(
+            "目前分數歷史樣本還太少，統計結果僅供觀察。"
+            "建議至少累積 10 筆以上有效樣本，再判斷 DeepTrend 分數是否可靠。"
+        )
+
     chart_df = summary_df.dropna(subset=["平均報酬率"]).copy()
-    if not chart_df.empty:
+    chart_df = chart_df[pd.to_numeric(chart_df["有效樣本數"], errors="coerce").fillna(0) >= 3]
+    if chart_df.empty:
+        st.info("目前各觀察天數的有效樣本少於 3 筆，暫不繪製平均報酬圖，避免視覺誤導。")
+    else:
         fig = go.Figure()
         fig.add_trace(
             go.Bar(
