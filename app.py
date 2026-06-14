@@ -1483,6 +1483,12 @@ def render_score_history(stock_df):
     st.subheader("📈 分數歷史")
     st.caption("資料來源：output/stock_analysis_history.csv。用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
     st.caption("階段小標：避開（<20） → 轉弱（20-39） → 整理（40-59） → 轉強（60-79） → 強勢（80+）")
+    st.info(
+        "買賣訊號標準："
+        "✅ 買進訊號 = DeepTrend 首次站上 60 分，或由 60 分以下重新轉強；"
+        "✅ 賣出訊號 = DeepTrend 跌破 40 分，或原本已轉強後收盤跌破 5MA。"
+        "訊號是風險提示，仍需搭配 K 線、籌碼與市場環境判斷。"
+    )
 
     history_df = load_score_history_data()
     if history_df.empty:
