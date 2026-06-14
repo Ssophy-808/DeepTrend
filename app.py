@@ -1662,8 +1662,8 @@ def render_score_history(stock_df):
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
 
-    with st.expander("查看分數歷史明細"):
-        st.dataframe(detail_df.sort_values("日期", ascending=False), use_container_width=True, hide_index=True)
+    st.markdown("### 分數歷史明細")
+    st.dataframe(detail_df.sort_values("日期", ascending=False), use_container_width=True, hide_index=True)
 
     st.markdown("### 分數組成明細")
     date_options = selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").tolist()
