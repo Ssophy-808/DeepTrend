@@ -1427,8 +1427,6 @@ def score_signal_label(row, previous_row=None):
 
     if pd.notna(score) and score >= 60 and (pd.isna(prev_score) or prev_score < 60):
         return "✅ 買進訊號"
-    if pd.notna(score) and score >= 80:
-        return "✅ 買進訊號"
     if pd.notna(score) and score < 40 and pd.notna(prev_score) and prev_score >= 40:
         return "✅ 賣出訊號"
     if pd.notna(close) and pd.notna(ma5) and close < ma5 and pd.notna(prev_score) and prev_score >= 60:
@@ -1484,6 +1482,7 @@ def render_score_history(stock_df):
     """Render DeepTrend and component score history for one stock."""
     st.subheader("📈 分數歷史")
     st.caption("資料來源：output/stock_analysis_history.csv。用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
+    st.caption("階段小標：避開（<20） → 轉弱（20-39） → 整理（40-59） → 轉強（60-79） → 強勢（80+）")
 
     history_df = load_score_history_data()
     if history_df.empty:
@@ -1710,7 +1709,7 @@ def build_score_validation_result(history_df, score_threshold):
             continue
 
         stock_rows = stock_rows.reset_index(drop=True)
-        for horizon in [5, 10, 20]:
+        for horizon in [1, 3, 5, 10, 20]:
             future_close = stock_rows["收盤價"].shift(-horizon)
             stock_rows[f"{horizon}日後收盤價"] = future_close
             stock_rows[f"{horizon}日後報酬率"] = (future_close - stock_rows["收盤價"]) / stock_rows["收盤價"] * 100
@@ -1737,7 +1736,7 @@ def validation_summary(result_df):
         "總訊號數": len(result_df),
         "獨立股票數": result_df["股票代號"].nunique() if "股票代號" in result_df.columns else 0,
     }
-    for horizon in [5, 10, 20]:
+    for horizon in [1, 3, 5, 10, 20]:
         col = f"{horizon}日後報酬率"
         if col not in result_df.columns:
             summary[f"{horizon}日樣本數"] = 0
@@ -1756,7 +1755,7 @@ def validation_summary(result_df):
 def render_score_validation(stock_df):
     """Render validation statistics for DeepTrend threshold signals."""
     st.subheader("✅ 分數驗證")
-    st.caption("用歷史快照驗證：DeepTrend 分數達標後，後續 5 / 10 / 20 個快照的平均表現。")
+    st.caption("用歷史快照驗證：DeepTrend 分數達標後，後續 1 / 3 / 5 / 10 / 20 個快照的平均表現。")
 
     history_df = load_score_history_data()
     if history_df.empty:
@@ -1784,7 +1783,7 @@ def render_score_validation(stock_df):
             help="每筆歷史快照只要 DeepTrend 分數大於等於此門檻，就列入驗證樣本。",
         )
     with col2:
-        st.info("這裡使用已儲存的每日快照計算，不重新下載行情。若歷史資料還少，20日後樣本數會先偏少。")
+        st.info("這裡使用已儲存的每日快照計算，不重新下載行情。若歷史資料還少，10日/20日後樣本數會先偏少。")
 
     result_df = build_score_validation_result(history_df, score_threshold)
     if result_df.empty:
@@ -1802,7 +1801,7 @@ def render_score_validation(stock_df):
     top_cols[2].metric("平均每檔觸發", format_number(avg_per_stock, 2))
 
     summary_rows = []
-    for horizon in [5, 10, 20]:
+    for horizon in [1, 3, 5, 10, 20]:
         summary_rows.append(
             {
                 "觀察天數": f"{horizon}個快照後",
@@ -1846,6 +1845,8 @@ def render_score_validation(stock_df):
         "股票名稱",
         "收盤價",
         "DeepTrend分數",
+        "1日後報酬率",
+        "3日後報酬率",
         "5日後報酬率",
         "10日後報酬率",
         "20日後報酬率",
@@ -1857,7 +1858,7 @@ def render_score_validation(stock_df):
     detail_df["snapshot_date"] = detail_df["snapshot_date"].dt.strftime("%Y-%m-%d")
     detail_df = detail_df.rename(columns={"snapshot_date": "觸發日期"})
 
-    for col in ["收盤價", "DeepTrend分數", "5日後報酬率", "10日後報酬率", "20日後報酬率"]:
+    for col in ["收盤價", "DeepTrend分數", "1日後報酬率", "3日後報酬率", "5日後報酬率", "10日後報酬率", "20日後報酬率"]:
         if col in detail_df.columns:
             suffix = "%" if "報酬率" in col else ""
             detail_df[col] = detail_df[col].map(lambda value: f"{format_number(value, 2)}{suffix}" if pd.notna(value) else "")
