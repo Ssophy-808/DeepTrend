@@ -1630,26 +1630,6 @@ def render_score_history(stock_df):
         fig.update_yaxes(title_text="股價", secondary_y=True, showgrid=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 分數組成明細")
-    date_options = selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").tolist()
-    selected_date_label = st.selectbox(
-        "選擇快照日期",
-        date_options,
-        index=len(date_options) - 1,
-        key=f"score_breakdown_date_{selected_code}",
-    )
-    selected_snapshot = selected_df[selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").eq(selected_date_label)].iloc[-1]
-    st.caption(
-        f"{selected_date_label}｜狀態：{selected_snapshot.get('狀態程度', '資料不足')}｜"
-        f"{selected_snapshot.get('買賣訊號', '') or '無明確買賣訊號'}"
-    )
-
-    breakdown_df = score_point_rows(selected_snapshot)
-    if breakdown_df.empty:
-        st.info("這筆快照目前沒有足夠欄位可拆解分數。")
-    else:
-        st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
-
     detail_columns = [
         "snapshot_date",
         "股票代號",
@@ -1678,6 +1658,26 @@ def render_score_history(stock_df):
 
     with st.expander("查看分數歷史明細"):
         st.dataframe(detail_df.sort_values("日期", ascending=False), use_container_width=True, hide_index=True)
+
+    st.markdown("### 分數組成明細")
+    date_options = selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").tolist()
+    selected_date_label = st.selectbox(
+        "選擇快照日期",
+        date_options,
+        index=len(date_options) - 1,
+        key=f"score_breakdown_date_{selected_code}",
+    )
+    selected_snapshot = selected_df[selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").eq(selected_date_label)].iloc[-1]
+    st.caption(
+        f"{selected_date_label}｜狀態：{selected_snapshot.get('狀態程度', '資料不足')}｜"
+        f"{selected_snapshot.get('買賣訊號', '') or '無明確買賣訊號'}"
+    )
+
+    breakdown_df = score_point_rows(selected_snapshot)
+    if breakdown_df.empty:
+        st.info("這筆快照目前沒有足夠欄位可拆解分數。")
+    else:
+        st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
 
     csv_df = selected_df.copy()
     csv_df["snapshot_date"] = csv_df["snapshot_date"].dt.strftime("%Y-%m-%d")
