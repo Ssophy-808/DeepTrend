@@ -1373,6 +1373,176 @@ def render_chip_audit(stock_df):
     )
 
 
+@st.cache_data(ttl=600)
+def load_score_history_data():
+    """Load saved DeepTrend score snapshots for per-stock trend review."""
+    if not STOCK_ANALYSIS_HISTORY_FILE.exists():
+        return pd.DataFrame()
+
+    try:
+        history_df = pd.read_csv(STOCK_ANALYSIS_HISTORY_FILE)
+    except Exception:
+        return pd.DataFrame()
+
+    required_columns = {"snapshot_date", "股票代號", "股票名稱"}
+    if not required_columns.issubset(history_df.columns):
+        return pd.DataFrame()
+
+    history_df = history_df.copy()
+    history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    history_df = history_df[history_df["snapshot_date"].notna()].copy()
+    history_df["股票代號"] = history_df["股票代號"].astype(str).str.strip()
+    history_df["stock_code"] = history_df["股票代號"].str.split(".").str[0]
+
+    score_columns = ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "技術分數", "分數變化", "分數變化率"]
+    for col in score_columns:
+        if col in history_df.columns:
+            history_df[col] = pd.to_numeric(history_df[col], errors="coerce")
+
+    return history_df.sort_values(["snapshot_date", "股票代號"])
+
+
+def render_score_history(stock_df):
+    """Render DeepTrend and component score history for one stock."""
+    st.subheader("📈 分數歷史")
+    st.caption("資料來源：output/stock_analysis_history.csv。用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
+
+    history_df = load_score_history_data()
+    if history_df.empty:
+        st.warning("目前沒有可讀取的分數歷史資料。請先確認 output/stock_analysis_history.csv 是否存在且欄位完整。")
+        return
+
+    stock_options = []
+    seen_codes = set()
+    if not stock_df.empty and {"股票代號", "股票名稱"}.issubset(stock_df.columns):
+        for _, row in stock_df[["股票代號", "股票名稱"]].dropna().iterrows():
+            ticker = normalize_tw_symbol(row["股票代號"])
+            code = str(ticker).split(".")[0]
+            if code and code not in seen_codes:
+                stock_options.append((code, f"{ticker} {row['股票名稱']}"))
+                seen_codes.add(code)
+
+    for code, name in (
+        history_df[["stock_code", "股票名稱"]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values("stock_code")
+        .itertuples(index=False, name=None)
+    ):
+        if code not in seen_codes:
+            stock_options.append((str(code), f"{code} {name}"))
+            seen_codes.add(code)
+
+    if not stock_options:
+        st.info("分數歷史內目前沒有可選股票。")
+        return
+
+    selected_label = st.selectbox(
+        "選擇股票",
+        [label for _, label in stock_options],
+        index=0,
+        key="score_history_stock",
+    )
+    selected_code = stock_options[[label for _, label in stock_options].index(selected_label)][0]
+
+    selected_df = history_df[history_df["stock_code"].eq(selected_code)].copy()
+    if selected_df.empty:
+        st.info("這檔股票目前沒有分數歷史資料。")
+        return
+
+    stock_name = selected_df["股票名稱"].dropna().astype(str).iloc[-1] if "股票名稱" in selected_df.columns else ""
+    selected_df = selected_df.drop_duplicates(subset=["snapshot_date", "股票代號"], keep="last")
+    selected_df = selected_df.sort_values("snapshot_date")
+
+    score_columns = [col for col in ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數"] if col in selected_df.columns]
+    available_score_columns = [col for col in score_columns if selected_df[col].notna().any()]
+
+    st.markdown(f"### {selected_code} {stock_name}")
+    st.caption(
+        f"歷史區間：{selected_df['snapshot_date'].min().date()} 至 {selected_df['snapshot_date'].max().date()}，"
+        f"共 {selected_df['snapshot_date'].nunique()} 筆快照"
+    )
+
+    latest_row = selected_df.iloc[-1]
+    latest_deeptrend = latest_row.get("DeepTrend分數", pd.NA)
+    latest_change = latest_row.get("分數變化", pd.NA)
+    latest_change_rate = latest_row.get("分數變化率", pd.NA)
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("最新 DeepTrend", format_number(latest_deeptrend, 1))
+    metric_cols[1].metric("技術面", format_number(latest_row.get("技術面分數", pd.NA), 1))
+    metric_cols[2].metric("籌碼面", format_number(latest_row.get("籌碼分數", pd.NA), 1))
+    metric_cols[3].metric(
+        "分數變化",
+        format_number(latest_change, 1),
+        delta=f"{format_number(latest_change_rate, 2)}%" if pd.notna(latest_change_rate) else None,
+    )
+
+    if not available_score_columns:
+        st.info("這檔股票目前還沒有 DeepTrend 分數組成歷史，之後每日更新會逐步累積。")
+    else:
+        fig = go.Figure()
+        color_map = {
+            "DeepTrend分數": "#ef4444",
+            "技術面分數": "#38bdf8",
+            "籌碼分數": "#22c55e",
+            "量價分數": "#facc15",
+        }
+        for col in available_score_columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=selected_df["snapshot_date"],
+                    y=selected_df[col],
+                    mode="lines+markers",
+                    name=col,
+                    line=dict(color=color_map.get(col)),
+                )
+            )
+        fig.update_layout(
+            height=420,
+            margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis_title="日期",
+            yaxis_title="分數",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    detail_columns = [
+        "snapshot_date",
+        "股票代號",
+        "股票名稱",
+        "DeepTrend分數",
+        "技術面分數",
+        "籌碼分數",
+        "量價分數",
+        "前次分數",
+        "分數變化",
+        "分數變化率",
+        "狀態",
+        "綜合判斷",
+    ]
+    detail_columns = [col for col in detail_columns if col in selected_df.columns]
+    detail_df = selected_df[detail_columns].copy()
+    detail_df["snapshot_date"] = detail_df["snapshot_date"].dt.strftime("%Y-%m-%d")
+    detail_df = detail_df.rename(columns={"snapshot_date": "日期"})
+
+    for col in ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "前次分數", "分數變化", "分數變化率"]:
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
+
+    with st.expander("查看分數歷史明細"):
+        st.dataframe(detail_df.sort_values("日期", ascending=False), use_container_width=True, hide_index=True)
+
+    csv_df = selected_df.copy()
+    csv_df["snapshot_date"] = csv_df["snapshot_date"].dt.strftime("%Y-%m-%d")
+    st.download_button(
+        "下載此股票分數歷史 CSV",
+        data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
+        file_name=f"score_history_{selected_code}.csv",
+        mime="text/csv",
+    )
+
+
 def render_scan_table(filtered_df):
     """Render the full detailed stock table with formatting and status coloring."""
     st.subheader("📋 詳細表格")
@@ -3036,6 +3206,7 @@ view_options = [
     "🚀 強勢排行榜",
     "🔎 個股查詢",
     "🧾 籌碼查帳",
+    "📈 分數歷史",
     "🧪 回測實驗室",
     "🌡️ 觀察池溫度",
     "🏆 策略排行榜",
@@ -3063,6 +3234,8 @@ elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧾 籌碼查帳":
     render_chip_audit(df)
+elif active_view == "📈 分數歷史":
+    render_score_history(df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
 elif active_view == "🌡️ 觀察池溫度":
