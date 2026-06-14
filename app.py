@@ -1394,7 +1394,7 @@ def load_score_history_data():
     history_df["股票代號"] = history_df["股票代號"].astype(str).str.strip()
     history_df["stock_code"] = history_df["股票代號"].str.split(".").str[0]
 
-    score_columns = ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "技術分數", "分數變化", "分數變化率"]
+    score_columns = ["收盤價", "DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "技術分數", "分數變化", "分數變化率"]
     for col in score_columns:
         if col in history_df.columns:
             history_df[col] = pd.to_numeric(history_df[col], errors="coerce")
@@ -1539,6 +1539,191 @@ def render_score_history(stock_df):
         "下載此股票分數歷史 CSV",
         data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
         file_name=f"score_history_{selected_code}.csv",
+        mime="text/csv",
+    )
+
+
+def build_score_validation_result(history_df, score_threshold):
+    """Calculate forward returns after each DeepTrend score threshold event."""
+    required_columns = {"snapshot_date", "股票代號", "股票名稱", "收盤價", "DeepTrend分數"}
+    if history_df.empty or not required_columns.issubset(history_df.columns):
+        return pd.DataFrame()
+
+    work_df = history_df.copy()
+    work_df["收盤價"] = pd.to_numeric(work_df["收盤價"], errors="coerce")
+    work_df["DeepTrend分數"] = pd.to_numeric(work_df["DeepTrend分數"], errors="coerce")
+    work_df = work_df.dropna(subset=["snapshot_date", "股票代號", "收盤價", "DeepTrend分數"])
+    if work_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, stock_rows in work_df.groupby("股票代號"):
+        stock_rows = stock_rows.sort_values("snapshot_date").drop_duplicates(subset=["snapshot_date"], keep="last")
+        if stock_rows.empty:
+            continue
+
+        stock_rows = stock_rows.reset_index(drop=True)
+        for horizon in [5, 10, 20]:
+            future_close = stock_rows["收盤價"].shift(-horizon)
+            stock_rows[f"{horizon}日後收盤價"] = future_close
+            stock_rows[f"{horizon}日後報酬率"] = (future_close - stock_rows["收盤價"]) / stock_rows["收盤價"] * 100
+
+        signal_rows = stock_rows[stock_rows["DeepTrend分數"] >= score_threshold].copy()
+        if signal_rows.empty:
+            continue
+
+        rows.append(signal_rows)
+
+    if not rows:
+        return pd.DataFrame()
+
+    result_df = pd.concat(rows, ignore_index=True)
+    return result_df.sort_values(["snapshot_date", "DeepTrend分數"], ascending=[False, False])
+
+
+def validation_summary(result_df):
+    """Summarize score validation signals into average returns and win rates."""
+    if result_df.empty:
+        return {}
+
+    summary = {
+        "總訊號數": len(result_df),
+        "獨立股票數": result_df["股票代號"].nunique() if "股票代號" in result_df.columns else 0,
+    }
+    for horizon in [5, 10, 20]:
+        col = f"{horizon}日後報酬率"
+        if col not in result_df.columns:
+            summary[f"{horizon}日樣本數"] = 0
+            summary[f"{horizon}日平均報酬"] = pd.NA
+            summary[f"{horizon}日上漲機率"] = pd.NA
+            continue
+
+        valid_returns = pd.to_numeric(result_df[col], errors="coerce").dropna()
+        summary[f"{horizon}日樣本數"] = len(valid_returns)
+        summary[f"{horizon}日平均報酬"] = valid_returns.mean() if not valid_returns.empty else pd.NA
+        summary[f"{horizon}日上漲機率"] = (valid_returns.gt(0).mean() * 100) if not valid_returns.empty else pd.NA
+
+    return summary
+
+
+def render_score_validation(stock_df):
+    """Render validation statistics for DeepTrend threshold signals."""
+    st.subheader("✅ 分數驗證")
+    st.caption("用歷史快照驗證：DeepTrend 分數達標後，後續 5 / 10 / 20 個快照的平均表現。")
+
+    history_df = load_score_history_data()
+    if history_df.empty:
+        st.warning("目前沒有可讀取的分數歷史資料，無法驗證 DeepTrend 分數。")
+        return
+
+    required_columns = {"snapshot_date", "股票代號", "股票名稱", "收盤價", "DeepTrend分數"}
+    missing_columns = sorted(required_columns - set(history_df.columns))
+    if missing_columns:
+        st.warning(f"分數驗證缺少必要欄位：{', '.join(missing_columns)}")
+        return
+
+    valid_score_count = pd.to_numeric(history_df["DeepTrend分數"], errors="coerce").notna().sum()
+    if valid_score_count == 0:
+        st.info("目前歷史資料中還沒有 DeepTrend 分數。之後每日更新累積後，就能開始驗證。")
+        return
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        score_threshold = st.number_input(
+            "DeepTrend 達標分數",
+            min_value=0.0,
+            value=60.0,
+            step=5.0,
+            help="每筆歷史快照只要 DeepTrend 分數大於等於此門檻，就列入驗證樣本。",
+        )
+    with col2:
+        st.info("這裡使用已儲存的每日快照計算，不重新下載行情。若歷史資料還少，20日後樣本數會先偏少。")
+
+    result_df = build_score_validation_result(history_df, score_threshold)
+    if result_df.empty:
+        st.info("目前沒有符合這個分數門檻的歷史訊號。可以先降低達標分數，或等待歷史資料累積。")
+        return
+
+    summary = validation_summary(result_df)
+    total_signals = summary.get("總訊號數", 0)
+    unique_stocks = summary.get("獨立股票數", 0)
+    avg_per_stock = total_signals / unique_stocks if unique_stocks else 0
+
+    top_cols = st.columns(3)
+    top_cols[0].metric("總訊號數", format_integer(total_signals))
+    top_cols[1].metric("獨立股票數", format_integer(unique_stocks))
+    top_cols[2].metric("平均每檔觸發", format_number(avg_per_stock, 2))
+
+    summary_rows = []
+    for horizon in [5, 10, 20]:
+        summary_rows.append(
+            {
+                "觀察天數": f"{horizon}個快照後",
+                "有效樣本數": summary.get(f"{horizon}日樣本數", 0),
+                "平均報酬率": summary.get(f"{horizon}日平均報酬", pd.NA),
+                "上漲機率": summary.get(f"{horizon}日上漲機率", pd.NA),
+            }
+        )
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_display = summary_df.copy()
+    summary_display["有效樣本數"] = summary_display["有效樣本數"].map(format_integer)
+    summary_display["平均報酬率"] = summary_display["平均報酬率"].map(lambda value: f"{format_number(value, 2)}%" if pd.notna(value) else "")
+    summary_display["上漲機率"] = summary_display["上漲機率"].map(lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "")
+
+    st.markdown("### 驗證摘要")
+    st.dataframe(summary_display, use_container_width=True, hide_index=True)
+
+    chart_df = summary_df.dropna(subset=["平均報酬率"]).copy()
+    if not chart_df.empty:
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=chart_df["觀察天數"],
+                y=chart_df["平均報酬率"],
+                name="平均報酬率",
+                marker_color="#38bdf8",
+            )
+        )
+        fig.update_layout(
+            height=320,
+            margin=dict(l=10, r=10, t=30, b=10),
+            yaxis_title="平均報酬率 (%)",
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    detail_columns = [
+        "snapshot_date",
+        "股票代號",
+        "股票名稱",
+        "收盤價",
+        "DeepTrend分數",
+        "5日後報酬率",
+        "10日後報酬率",
+        "20日後報酬率",
+        "狀態",
+        "綜合判斷",
+    ]
+    detail_columns = [col for col in detail_columns if col in result_df.columns]
+    detail_df = result_df[detail_columns].copy()
+    detail_df["snapshot_date"] = detail_df["snapshot_date"].dt.strftime("%Y-%m-%d")
+    detail_df = detail_df.rename(columns={"snapshot_date": "觸發日期"})
+
+    for col in ["收盤價", "DeepTrend分數", "5日後報酬率", "10日後報酬率", "20日後報酬率"]:
+        if col in detail_df.columns:
+            suffix = "%" if "報酬率" in col else ""
+            detail_df[col] = detail_df[col].map(lambda value: f"{format_number(value, 2)}{suffix}" if pd.notna(value) else "")
+
+    with st.expander("查看達標訊號明細（最多顯示前 300 筆）"):
+        st.dataframe(detail_df.head(300), use_container_width=True, hide_index=True)
+
+    csv_df = result_df.copy()
+    csv_df["snapshot_date"] = csv_df["snapshot_date"].dt.strftime("%Y-%m-%d")
+    st.download_button(
+        "下載分數驗證結果 CSV",
+        data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
+        file_name=f"score_validation_{int(score_threshold)}.csv",
         mime="text/csv",
     )
 
@@ -3201,6 +3386,7 @@ if keyword:
 view_options = [
     "📊 股票雷達",
     "📈 分數歷史",
+    "✅ 分數驗證",
     "🔎 個股查詢",
     "🌡️ 觀察池溫度",
     "🧪 回測實驗室",
@@ -3228,6 +3414,8 @@ elif active_view == "🧾 籌碼查帳":
     render_chip_audit(df)
 elif active_view == "📈 分數歷史":
     render_score_history(df)
+elif active_view == "✅ 分數驗證":
+    render_score_validation(df)
 elif active_view == "🧪 回測實驗室":
     render_backtest_lab(df)
 else:
