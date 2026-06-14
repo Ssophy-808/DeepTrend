@@ -1402,6 +1402,84 @@ def load_score_history_data():
     return history_df.sort_values(["snapshot_date", "股票代號"])
 
 
+def deeptrend_status_level(score):
+    """Translate DeepTrend score into an easy-to-read strength stage."""
+    if pd.isna(score):
+        return "資料不足"
+    score = float(score)
+    if score >= 80:
+        return "強勢"
+    if score >= 60:
+        return "轉強"
+    if score >= 40:
+        return "整理"
+    if score >= 20:
+        return "轉弱"
+    return "避開"
+
+
+def score_signal_label(row, previous_row=None):
+    """Infer a lightweight buy/sell marker from score and basic MA state."""
+    score = row_number(row, "DeepTrend分數")
+    close = row_number(row, "收盤價")
+    ma5 = row_number(row, "5日線")
+    prev_score = row_number(previous_row, "DeepTrend分數") if previous_row is not None else pd.NA
+
+    if pd.notna(score) and score >= 60 and (pd.isna(prev_score) or prev_score < 60):
+        return "✅ 買進訊號"
+    if pd.notna(score) and score >= 80:
+        return "✅ 買進訊號"
+    if pd.notna(score) and score < 40 and pd.notna(prev_score) and prev_score >= 40:
+        return "✅ 賣出訊號"
+    if pd.notna(close) and pd.notna(ma5) and close < ma5 and pd.notna(prev_score) and prev_score >= 60:
+        return "✅ 賣出訊號"
+    return ""
+
+
+def score_point_rows(row):
+    """Build readable score component details from one saved snapshot."""
+    close = row_number(row, "收盤價")
+    ma5 = row_number(row, "5日線")
+    ma10 = row_number(row, "10日線")
+    ma20 = row_number(row, "20日線")
+    high20 = row_number(row, "20日高點")
+    volume = row_number(row, "成交量")
+    avg_volume = row_number(row, "5日均量")
+    chip_5d = row_number(row, "籌碼5日")
+    foreign_5d = row_number(row, "外資5日")
+    investment_5d = row_number(row, "投信5日")
+
+    rows = []
+
+    def add(category, condition, points, active):
+        rows.append(
+            {
+                "項目": category,
+                "條件": f"{'✓' if active else '☐'} {condition}",
+                "分數": points if active else 0,
+            }
+        )
+
+    add("技術面", "站上5MA", 10, pd.notna(close) and pd.notna(ma5) and close > ma5)
+    add("技術面", "站上10MA", 10, pd.notna(close) and pd.notna(ma10) and close > ma10)
+    add("技術面", "站上20MA", 10, pd.notna(close) and pd.notna(ma20) and close > ma20)
+    add("技術面", "5MA > 10MA > 20MA", 20, pd.notna(ma5) and pd.notna(ma10) and pd.notna(ma20) and ma5 > ma10 > ma20)
+    add("技術面", "接近20日高點", 15, pd.notna(close) and pd.notna(high20) and close >= high20 * 0.98)
+    add("技術面", "突破20日高點", 20, pd.notna(close) and pd.notna(high20) and close >= high20)
+    add("量價面", "量能放大", 10, pd.notna(volume) and pd.notna(avg_volume) and avg_volume > 0 and volume >= avg_volume * 1.5)
+    add("籌碼面", "5日法人買超", 15, pd.notna(chip_5d) and chip_5d > 0)
+    add("籌碼面", "外資5日買超", 10, pd.notna(foreign_5d) and foreign_5d > 0)
+    add("籌碼面", "投信5日買超", 10, pd.notna(investment_5d) and investment_5d > 0)
+    add(
+        "籌碼面",
+        "外資投信同步買超",
+        15,
+        pd.notna(foreign_5d) and pd.notna(investment_5d) and foreign_5d > 0 and investment_5d > 0,
+    )
+
+    return pd.DataFrame(rows)
+
+
 def render_score_history(stock_df):
     """Render DeepTrend and component score history for one stock."""
     st.subheader("📈 分數歷史")
@@ -1456,6 +1534,12 @@ def render_score_history(stock_df):
 
     score_columns = [col for col in ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數"] if col in selected_df.columns]
     available_score_columns = [col for col in score_columns if selected_df[col].notna().any()]
+    previous_rows = selected_df.shift(1)
+    selected_df["狀態程度"] = selected_df["DeepTrend分數"].map(deeptrend_status_level) if "DeepTrend分數" in selected_df.columns else "資料不足"
+    selected_df["買賣訊號"] = [
+        score_signal_label(row, previous_rows.iloc[index] if index > 0 else None)
+        for index, (_, row) in enumerate(selected_df.iterrows())
+    ]
 
     st.markdown(f"### {selected_code} {stock_name}")
     st.caption(
@@ -1468,7 +1552,7 @@ def render_score_history(stock_df):
     latest_change = latest_row.get("分數變化", pd.NA)
     latest_change_rate = latest_row.get("分數變化率", pd.NA)
 
-    metric_cols = st.columns(4)
+    metric_cols = st.columns(5)
     metric_cols[0].metric("最新 DeepTrend", format_number(latest_deeptrend, 1))
     metric_cols[1].metric("技術面", format_number(latest_row.get("技術面分數", pd.NA), 1))
     metric_cols[2].metric("籌碼面", format_number(latest_row.get("籌碼分數", pd.NA), 1))
@@ -1477,11 +1561,12 @@ def render_score_history(stock_df):
         format_number(latest_change, 1),
         delta=f"{format_number(latest_change_rate, 2)}%" if pd.notna(latest_change_rate) else None,
     )
+    metric_cols[4].metric("狀態程度", latest_row.get("狀態程度", "資料不足"))
 
     if not available_score_columns:
         st.info("這檔股票目前還沒有 DeepTrend 分數組成歷史，之後每日更新會逐步累積。")
     else:
-        fig = go.Figure()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
         color_map = {
             "DeepTrend分數": "#ef4444",
             "技術面分數": "#38bdf8",
@@ -1496,21 +1581,81 @@ def render_score_history(stock_df):
                     mode="lines+markers",
                     name=col,
                     line=dict(color=color_map.get(col)),
-                )
+                ),
+                secondary_y=False,
             )
+        if "收盤價" in selected_df.columns and selected_df["收盤價"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=selected_df["snapshot_date"],
+                    y=selected_df["收盤價"],
+                    mode="lines",
+                    name="股價",
+                    line=dict(color="#a3a3a3", dash="dash"),
+                ),
+                secondary_y=True,
+            )
+
+        if "DeepTrend分數" in selected_df.columns:
+            buy_df = selected_df[selected_df["買賣訊號"].eq("✅ 買進訊號")]
+            sell_df = selected_df[selected_df["買賣訊號"].eq("✅ 賣出訊號")]
+            if not buy_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=buy_df["snapshot_date"],
+                        y=buy_df["DeepTrend分數"],
+                        mode="markers",
+                        name="買進訊號",
+                        marker=dict(color="#22c55e", symbol="triangle-up", size=13),
+                    ),
+                    secondary_y=False,
+                )
+            if not sell_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=sell_df["snapshot_date"],
+                        y=sell_df["DeepTrend分數"],
+                        mode="markers",
+                        name="賣出訊號",
+                        marker=dict(color="#ef4444", symbol="triangle-down", size=13),
+                    ),
+                    secondary_y=False,
+                )
         fig.update_layout(
-            height=420,
+            height=460,
             margin=dict(l=10, r=10, t=30, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             xaxis_title="日期",
-            yaxis_title="分數",
         )
+        fig.update_yaxes(title_text="分數", secondary_y=False)
+        fig.update_yaxes(title_text="股價", secondary_y=True, showgrid=False)
         st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### 分數組成明細")
+    date_options = selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").tolist()
+    selected_date_label = st.selectbox(
+        "選擇快照日期",
+        date_options,
+        index=len(date_options) - 1,
+        key=f"score_breakdown_date_{selected_code}",
+    )
+    selected_snapshot = selected_df[selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").eq(selected_date_label)].iloc[-1]
+    st.caption(
+        f"{selected_date_label}｜狀態：{selected_snapshot.get('狀態程度', '資料不足')}｜"
+        f"{selected_snapshot.get('買賣訊號', '') or '無明確買賣訊號'}"
+    )
+
+    breakdown_df = score_point_rows(selected_snapshot)
+    if breakdown_df.empty:
+        st.info("這筆快照目前沒有足夠欄位可拆解分數。")
+    else:
+        st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
 
     detail_columns = [
         "snapshot_date",
         "股票代號",
         "股票名稱",
+        "收盤價",
         "DeepTrend分數",
         "技術面分數",
         "籌碼分數",
@@ -1518,6 +1663,8 @@ def render_score_history(stock_df):
         "前次分數",
         "分數變化",
         "分數變化率",
+        "狀態程度",
+        "買賣訊號",
         "狀態",
         "綜合判斷",
     ]
@@ -1526,7 +1673,7 @@ def render_score_history(stock_df):
     detail_df["snapshot_date"] = detail_df["snapshot_date"].dt.strftime("%Y-%m-%d")
     detail_df = detail_df.rename(columns={"snapshot_date": "日期"})
 
-    for col in ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "前次分數", "分數變化", "分數變化率"]:
+    for col in ["收盤價", "DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "前次分數", "分數變化", "分數變化率"]:
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
 

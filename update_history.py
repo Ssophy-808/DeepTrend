@@ -29,12 +29,9 @@ def load_current_snapshot():
 
 def append_snapshot_to_history(snapshot_df):
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_date = str(snapshot_df["snapshot_date"].iloc[0])
 
     if HISTORY_FILE.exists():
         history_df = pd.read_csv(HISTORY_FILE)
-        if "snapshot_date" in history_df.columns:
-            history_df = history_df[history_df["snapshot_date"].astype(str) != snapshot_date]
         combined_df = pd.concat([history_df, snapshot_df], ignore_index=True)
     else:
         combined_df = snapshot_df
