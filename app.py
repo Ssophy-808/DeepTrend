@@ -1758,6 +1758,93 @@ def validation_summary(result_df):
     return summary
 
 
+def build_signal_tracking(history_df, result_df):
+    """Build an in-progress tracking table for recent DeepTrend threshold signals."""
+    required_columns = {"snapshot_date", "股票代號", "股票名稱", "收盤價"}
+    if history_df.empty or result_df.empty or not required_columns.issubset(history_df.columns):
+        return pd.DataFrame()
+
+    rows = []
+    history_df = history_df.copy()
+    history_df["收盤價"] = pd.to_numeric(history_df["收盤價"], errors="coerce")
+
+    for _, signal in result_df.iterrows():
+        stock_id = signal.get("股票代號")
+        trigger_date = signal.get("snapshot_date")
+        if pd.isna(stock_id) or pd.isna(trigger_date):
+            continue
+
+        stock_history = history_df[history_df["股票代號"].eq(stock_id)].copy()
+        stock_history = stock_history.sort_values("snapshot_date").drop_duplicates(subset=["snapshot_date"], keep="last")
+        stock_history = stock_history.reset_index(drop=True)
+        if stock_history.empty:
+            continue
+
+        matched_indexes = stock_history.index[stock_history["snapshot_date"].eq(trigger_date)].tolist()
+        if not matched_indexes:
+            continue
+
+        trigger_index = matched_indexes[-1]
+        latest_index = len(stock_history) - 1
+        elapsed = latest_index - trigger_index
+        if elapsed < 0 or elapsed > 20:
+            continue
+
+        latest_row = stock_history.iloc[latest_index]
+        trigger_close = pd.to_numeric(signal.get("收盤價"), errors="coerce")
+        latest_close = pd.to_numeric(latest_row.get("收盤價"), errors="coerce")
+        current_return = (
+            (latest_close - trigger_close) / trigger_close * 100
+            if pd.notna(trigger_close) and pd.notna(latest_close) and trigger_close
+            else pd.NA
+        )
+
+        row = {
+            "股票代號": stock_id,
+            "股票名稱": signal.get("股票名稱", ""),
+            "觸發日": trigger_date.strftime("%Y-%m-%d") if hasattr(trigger_date, "strftime") else str(trigger_date),
+            "追蹤天數": elapsed,
+            "觸發價": trigger_close,
+            "目前價": latest_close,
+            "目前報酬": current_return,
+            "DeepTrend分數": signal.get("DeepTrend分數", pd.NA),
+        }
+        for horizon in [3, 5, 10, 20]:
+            return_col = f"{horizon}日後報酬率"
+            if elapsed >= horizon:
+                value = pd.to_numeric(signal.get(return_col), errors="coerce")
+                row[f"{horizon}日"] = format_signed_pct(value) if pd.notna(value) else "尚無資料"
+            else:
+                row[f"{horizon}日"] = "追蹤中"
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame()
+
+    tracking_df = pd.DataFrame(rows)
+    return tracking_df.sort_values(["觸發日", "DeepTrend分數"], ascending=[False, False]).head(30)
+
+
+def render_signal_tracking(history_df, result_df):
+    """Render currently active DeepTrend signal follow-up tracking."""
+    st.subheader("📌 訊號後續追蹤")
+    st.caption("追蹤最近 20 個快照內的達標訊號，觀察 3 / 5 / 10 / 20 個快照後的表現。")
+
+    tracking_df = build_signal_tracking(history_df, result_df)
+    if tracking_df.empty:
+        st.info("目前沒有正在追蹤中的達標訊號。")
+        return
+
+    display_df = tracking_df.copy()
+    for col in ["觸發價", "目前價", "DeepTrend分數"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
+    if "目前報酬" in display_df.columns:
+        display_df["目前報酬"] = display_df["目前報酬"].map(format_signed_pct)
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
 def render_score_validation(stock_df):
     """Render validation statistics for DeepTrend threshold signals."""
     st.subheader("✅ 分數驗證")
@@ -1882,6 +1969,8 @@ def render_score_validation(stock_df):
     with st.expander("查看達標訊號明細（最多顯示前 300 筆）"):
         st.dataframe(detail_df.head(300), use_container_width=True, hide_index=True)
 
+    render_signal_tracking(history_df, result_df)
+
     csv_df = result_df.copy()
     csv_df["snapshot_date"] = csv_df["snapshot_date"].dt.strftime("%Y-%m-%d")
     st.download_button(
@@ -1890,6 +1979,89 @@ def render_score_validation(stock_df):
         file_name=f"score_validation_{int(score_threshold)}.csv",
         mime="text/csv",
     )
+
+
+def file_modified_text(path):
+    """Return a readable modified timestamp for a local data file."""
+    if not path.exists():
+        return ""
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def latest_csv_date(path, column):
+    """Read a CSV date column safely and return the latest date string."""
+    if not path.exists():
+        return ""
+    try:
+        file_df = pd.read_csv(path, usecols=[column])
+    except Exception:
+        return ""
+    dates = pd.to_datetime(file_df[column], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    return dates.max().strftime("%Y-%m-%d")
+
+
+def render_data_health(stock_df):
+    """Render local data freshness checks for the daily update pipeline."""
+    st.subheader("🩺 資料健康檢查")
+    st.caption("檢查本地/雲端資料檔是否有更新，方便確認 DeepTrend 今天的資料狀態。")
+
+    today_text = date.today().isoformat()
+    result_modified = file_modified_text(RESULT_FILE)
+    result_modified_date = result_modified[:10] if result_modified else ""
+    chip_latest_date = latest_csv_date(CHIP_DAILY_FILE, "date")
+    history_latest_date = latest_csv_date(STOCK_ANALYSIS_HISTORY_FILE, "snapshot_date")
+
+    rows = [
+        {
+            "檢查項目": "stock_analysis_result.xlsx 是否今天更新",
+            "目前狀態": "✅ 今天已更新" if result_modified_date == today_text else "⚠️ 不是今天",
+            "最新日期/時間": result_modified or "找不到檔案",
+        },
+        {
+            "檢查項目": "chip_daily.csv 是否有今天資料",
+            "目前狀態": "✅ 今天有資料" if chip_latest_date == today_text else "⚠️ 尚未看到今天",
+            "最新日期/時間": chip_latest_date or "找不到日期",
+        },
+        {
+            "檢查項目": "stock_analysis_history.csv 是否有今天快照",
+            "目前狀態": "✅ 今天有快照" if history_latest_date == today_text else "⚠️ 尚未看到今天",
+            "最新日期/時間": history_latest_date or "找不到日期",
+        },
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    watchlist_file = BASE_DIR / "watchlist.csv"
+    if not watchlist_file.exists():
+        st.warning("找不到 watchlist.csv，無法比對缺漏股票。")
+        return
+    if stock_df.empty or "股票代號" not in stock_df.columns:
+        st.warning("目前股票分析結果為空，無法比對缺漏股票。")
+        return
+
+    try:
+        watchlist_df = pd.read_csv(watchlist_file)
+    except Exception as exc:
+        st.warning(f"watchlist.csv 讀取失敗：{exc}")
+        return
+
+    if "ticker" not in watchlist_df.columns:
+        st.warning("watchlist.csv 缺少 ticker 欄位，無法比對缺漏股票。")
+        return
+
+    expected_codes = watchlist_df["ticker"].astype(str).map(stock_code_key)
+    actual_codes = stock_df["股票代號"].astype(str).map(stock_code_key)
+    missing_mask = ~expected_codes.isin(set(actual_codes.dropna()))
+    missing_df = watchlist_df.loc[missing_mask].copy()
+
+    st.markdown("### 抓不到資料股票")
+    if missing_df.empty:
+        st.success("目前 watchlist 內股票都有出現在 stock_analysis_result.xlsx。")
+    else:
+        display_cols = [col for col in ["ticker", "name", "group"] if col in missing_df.columns]
+        st.warning(f"目前有 {len(missing_df)} 檔 watchlist 股票沒有出現在分析結果。")
+        st.dataframe(missing_df[display_cols] if display_cols else missing_df, use_container_width=True, hide_index=True)
 
 
 def render_scan_table(filtered_df):
@@ -3553,9 +3725,9 @@ view_options = [
     "✅ 分數驗證",
     "🔎 個股查詢",
     "🌡️ 觀察池溫度",
-    "🧪 回測實驗室",
     "🧾 籌碼查帳",
     "📋 詳細表格",
+    "🩺 資料健康檢查",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
     st.session_state["active_view"] = view_options[0]
@@ -3580,7 +3752,7 @@ elif active_view == "📈 分數歷史":
     render_score_history(df)
 elif active_view == "✅ 分數驗證":
     render_score_validation(df)
-elif active_view == "🧪 回測實驗室":
-    render_backtest_lab(df)
+elif active_view == "🩺 資料健康檢查":
+    render_data_health(df)
 else:
     render_market_temperature(df)
