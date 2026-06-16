@@ -42,6 +42,7 @@
 
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -3686,8 +3687,9 @@ with st.container(border=True):
         st.caption("資料")
         if st.button("🔄 更新市場資料", use_container_width=True):
             with st.spinner("正在更新資料，請稍等..."):
-                subprocess.run(["python", str(BASE_DIR / "update_chip.py")], check=False)
-                subprocess.run(["python", str(BASE_DIR / "main.py")], check=False)
+                subprocess.run([sys.executable, str(BASE_DIR / "update_chip.py")], check=False)
+                subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
+                subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
             st.cache_data.clear()
             st.success("更新完成！")
             st.rerun()
