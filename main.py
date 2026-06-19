@@ -10,8 +10,10 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 WATCHLIST_FILE = BASE_DIR / "watchlist.csv"
 CHIP_FILE = BASE_DIR / "chip.csv"
+CHIP_DAILY_FILE = OUTPUT_DIR / "chip_daily.csv"
 RESULT_FILE = OUTPUT_DIR / "stock_analysis_result.xlsx"
 HISTORY_FILE = OUTPUT_DIR / "stock_analysis_history.csv"
+MIN_RESULT_SUCCESS_RATIO = 0.8
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -29,6 +31,19 @@ def to_float(value):
         return float(text)
     except (TypeError, ValueError):
         return 0
+
+
+def latest_chip_daily_date():
+    if not CHIP_DAILY_FILE.exists():
+        return ""
+    try:
+        chip_daily_df = pd.read_csv(CHIP_DAILY_FILE, usecols=["date"])
+    except Exception:
+        return ""
+    dates = pd.to_datetime(chip_daily_df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    return dates.max().date().isoformat()
 
 
 def parse_roc_date(value):
@@ -362,6 +377,14 @@ def classify_score(score):
 def main():
     watchlist = pd.read_csv(WATCHLIST_FILE)
     chip_data = pd.read_csv(CHIP_FILE)
+    today_text = date.today().isoformat()
+    chip_latest_date = latest_chip_daily_date()
+    if chip_latest_date != today_text:
+        raise RuntimeError(
+            f"chip_daily.csv latest date is {chip_latest_date or 'missing'}, not {today_text}. "
+            "Stock analysis was not updated to avoid overwriting data on a non-trading or incomplete-data day."
+        )
+
     previous_scores = load_previous_scores()
     results = []
 
@@ -513,6 +536,13 @@ def main():
 
     if result_df.empty:
         raise RuntimeError("沒有產生任何分析結果，請檢查官方資料來源或 watchlist.csv。")
+
+    min_required_rows = int(len(watchlist) * MIN_RESULT_SUCCESS_RATIO)
+    if len(result_df) < min_required_rows:
+        raise RuntimeError(
+            f"Analysis result is incomplete: {len(result_df)}/{len(watchlist)} rows. "
+            f"Need at least {min_required_rows}. Existing result file was not overwritten."
+        )
 
     result_df = result_df.sort_values(by="技術分數", ascending=False)
     result_df.to_excel(RESULT_FILE, index=False)

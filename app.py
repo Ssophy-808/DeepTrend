@@ -3688,10 +3688,14 @@ with st.container(border=True):
         if st.button("🔄 更新市場資料", use_container_width=True):
             with st.spinner("正在更新資料，請稍等..."):
                 subprocess.run([sys.executable, str(BASE_DIR / "update_chip.py")], check=False)
-                subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
-                subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
+                main_result = subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
+                if main_result.returncode == 0:
+                    subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
             st.cache_data.clear()
-            st.success("更新完成！")
+            if main_result.returncode == 0:
+                st.success("更新完成！")
+            else:
+                st.warning("主分析結果不完整，已保留上一個完整交易日資料。")
             st.rerun()
 
     with status_col:
