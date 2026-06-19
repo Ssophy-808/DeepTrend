@@ -380,9 +380,9 @@ def main():
     today_text = date.today().isoformat()
     chip_latest_date = latest_chip_daily_date()
     if chip_latest_date != today_text:
-        raise RuntimeError(
+        print(
             f"chip_daily.csv latest date is {chip_latest_date or 'missing'}, not {today_text}. "
-            "Stock analysis was not updated to avoid overwriting data on a non-trading or incomplete-data day."
+            "Using the latest available trading day."
         )
 
     previous_scores = load_previous_scores()
