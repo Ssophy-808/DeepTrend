@@ -1,0 +1,20 @@
+name: Keep Streamlit awake
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Ping every 6 hours so Streamlit Community Cloud is less likely to stay asleep.
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  keep-awake:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Wake DeepTrend Streamlit app
+        run: |
+          curl -L --fail --retry 3 --retry-delay 10 --max-time 60 \
+            "https://deeptrend-zdvlvdt3nx73pvfbr7cp6i.streamlit.app/"
