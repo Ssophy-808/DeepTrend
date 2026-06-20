@@ -1776,6 +1776,42 @@ def score_bucket_mask(score_series, lower, upper):
     return score_series.ge(lower) & score_series.lt(upper)
 
 
+def score_bucket_label(score):
+    """Assign one DeepTrend score to the configured validation interval label."""
+    if pd.isna(score):
+        return pd.NA
+    for label, lower, upper in SCORE_VALIDATION_BUCKETS:
+        if lower is None and score < upper:
+            return label
+        if upper is None and score >= lower:
+            return label
+        if lower is not None and upper is not None and lower <= score < upper:
+            return label
+    return pd.NA
+
+
+def filter_score_interval_events(work_df):
+    """Keep only the first snapshot when a stock enters a different DeepTrend score interval."""
+    if work_df.empty:
+        return work_df
+
+    event_rows = []
+    for _, stock_rows in work_df.groupby("股票代號"):
+        stock_rows = stock_rows.sort_values("snapshot_date").drop_duplicates(subset=["snapshot_date"], keep="last")
+        stock_rows = stock_rows.copy()
+        stock_rows["分數區間"] = stock_rows["DeepTrend分數"].map(score_bucket_label)
+        stock_rows = stock_rows.dropna(subset=["分數區間"])
+        if stock_rows.empty:
+            continue
+
+        previous_bucket = stock_rows["分數區間"].shift(1)
+        event_rows.append(stock_rows[stock_rows["分數區間"].ne(previous_bucket)])
+
+    if not event_rows:
+        return pd.DataFrame(columns=work_df.columns)
+    return pd.concat(event_rows, ignore_index=True)
+
+
 def summarize_score_validation_slice(signal_df):
     """Summarize a validation slice by signal count, unique stocks, returns, and win rates."""
     total_signals = len(signal_df)
@@ -1793,11 +1829,16 @@ def summarize_score_validation_slice(signal_df):
     return summary
 
 
-def build_score_interval_validation(history_df):
+def build_score_interval_validation(history_df, event_mode=False):
     """Compare forward returns across fixed DeepTrend score intervals."""
     work_df = prepare_score_validation_forward_returns(history_df)
     if work_df.empty:
         return pd.DataFrame()
+
+    if event_mode:
+        work_df = filter_score_interval_events(work_df)
+        if work_df.empty:
+            return pd.DataFrame()
 
     score_series = pd.to_numeric(work_df["DeepTrend分數"], errors="coerce")
     rows = []
@@ -1958,9 +1999,21 @@ def render_score_validation(stock_df):
             "區間模式用固定 DeepTrend 分數帶比較後續表現，"
             "可以觀察分數是否越高越好，或是否存在 40~60 這類甜蜜區。"
         )
-        interval_df = build_score_interval_validation(history_df)
+        interval_count_mode = st.radio(
+            "區間統計方式",
+            ["快照模式（目前）", "事件模式（建議）"],
+            horizontal=True,
+            help="快照模式會計算每一天符合區間的快照；事件模式只計算同一檔股票第一次進入該區間。",
+        )
+        use_event_mode = interval_count_mode.startswith("事件模式")
+        if use_event_mode:
+            st.caption("事件模式：同一檔股票連續待在同一區間只算一次，只有第一次進入該區間才觸發。")
+        else:
+            st.caption("快照模式：每一筆每日快照都列入統計，適合觀察分數狀態分布，但可能重複計算同一檔股票。")
+
+        interval_df = build_score_interval_validation(history_df, event_mode=use_event_mode)
         if interval_df.empty:
-            st.info("目前沒有足夠的分數歷史快照可做區間驗證。")
+            st.info("目前沒有足夠的分數歷史資料可做區間驗證。")
             return
 
         display_df = interval_df.copy()
@@ -2007,7 +2060,7 @@ def render_score_validation(stock_df):
         st.download_button(
             "下載分數區間驗證 CSV",
             data=interval_df.to_csv(index=False, encoding="utf-8-sig"),
-            file_name="score_interval_validation.csv",
+            file_name=f"score_interval_validation_{'event' if use_event_mode else 'snapshot'}.csv",
             mime="text/csv",
         )
         return
