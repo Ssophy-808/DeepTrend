@@ -16,5 +16,10 @@ jobs:
     steps:
       - name: Wake DeepTrend Streamlit app
         run: |
-          curl -L --fail --retry 3 --retry-delay 10 --max-time 60 \
-            "https://deeptrend-zdvlvdt3nx73pvfbr7cp6i.streamlit.app/"
+          STATUS_CODE=$(curl -L --silent --show-error --retry 3 --retry-delay 10 --max-time 60 \
+            --output /tmp/deeptrend_keepalive.html \
+            --write-out "%{http_code}" \
+            "https://deeptrend-zdvlvdt3nx73pvfbr7cp6i.streamlit.app/" || true)
+
+          echo "DeepTrend keepalive HTTP status: ${STATUS_CODE}"
+          test -s /tmp/deeptrend_keepalive.html && head -c 500 /tmp/deeptrend_keepalive.html || true
