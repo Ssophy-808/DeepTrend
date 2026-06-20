@@ -1439,11 +1439,11 @@ def score_signal_label(row, previous_row=None):
     prev_score = row_number(previous_row, "DeepTrend分數") if previous_row is not None else pd.NA
 
     if pd.notna(score) and score >= 60 and (pd.isna(prev_score) or prev_score < 60):
-        return "✅ 買進訊號"
+        return "▲ 轉強訊號"
     if pd.notna(score) and score < 40 and pd.notna(prev_score) and prev_score >= 40:
-        return "✅ 賣出訊號"
+        return "▼ 風險訊號"
     if pd.notna(close) and pd.notna(ma5) and close < ma5 and pd.notna(prev_score) and prev_score >= 60:
-        return "✅ 賣出訊號"
+        return "▼ 風險訊號"
     return ""
 
 
@@ -1498,8 +1498,8 @@ def render_score_history(stock_df):
     st.caption("階段小標：避開（<20） → 轉弱（20-39） → 整理（40-59） → 轉強（60-79） → 強勢（80+）")
     st.info(
         "買賣訊號標準："
-        "✅ 買進訊號 = DeepTrend 首次站上 60 分，或由 60 分以下重新轉強；"
-        "✅ 賣出訊號 = DeepTrend 跌破 40 分，或原本已轉強後收盤跌破 5MA。"
+        "▲ 轉強訊號 = DeepTrend 首次站上 60 分，或由 60 分以下重新轉強；"
+        "▼ 風險訊號 = DeepTrend 跌破 40 分，或原本已轉強後收盤跌破 5MA。"
         "訊號是風險提示，仍需搭配 K 線、籌碼與市場環境判斷。"
     )
 
@@ -1615,15 +1615,15 @@ def render_score_history(stock_df):
             )
 
         if "DeepTrend分數" in selected_df.columns:
-            buy_df = selected_df[selected_df["買賣訊號"].eq("✅ 買進訊號")]
-            sell_df = selected_df[selected_df["買賣訊號"].eq("✅ 賣出訊號")]
+            buy_df = selected_df[selected_df["買賣訊號"].eq("▲ 轉強訊號")]
+            sell_df = selected_df[selected_df["買賣訊號"].eq("▼ 風險訊號")]
             if not buy_df.empty:
                 fig.add_trace(
                     go.Scatter(
                         x=buy_df["snapshot_date"],
                         y=buy_df["DeepTrend分數"],
                         mode="markers",
-                        name="買進訊號",
+                        name="轉強訊號",
                         marker=dict(color="#22c55e", symbol="triangle-up", size=13),
                     ),
                     secondary_y=False,
@@ -1634,7 +1634,7 @@ def render_score_history(stock_df):
                         x=sell_df["snapshot_date"],
                         y=sell_df["DeepTrend分數"],
                         mode="markers",
-                        name="賣出訊號",
+                        name="風險訊號",
                         marker=dict(color="#ef4444", symbol="triangle-down", size=13),
                     ),
                     secondary_y=False,
@@ -1689,7 +1689,7 @@ def render_score_history(stock_df):
     selected_snapshot = selected_df[selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").eq(selected_date_label)].iloc[-1]
     st.caption(
         f"{selected_date_label}｜狀態：{selected_snapshot.get('狀態程度', '資料不足')}｜"
-        f"{selected_snapshot.get('買賣訊號', '') or '無明確買賣訊號'}"
+        f"{selected_snapshot.get('買賣訊號', '') or '無明確轉強/風險訊號'}"
     )
 
     breakdown_df = score_point_rows(selected_snapshot)
@@ -1708,8 +1708,20 @@ def render_score_history(stock_df):
     )
 
 
-def build_score_validation_result(history_df, score_threshold):
-    """Calculate forward returns after each DeepTrend score threshold event."""
+SCORE_VALIDATION_BUCKETS = [
+    ("DT < 0", None, 0),
+    ("0 <= DT < 20", 0, 20),
+    ("20 <= DT < 40", 20, 40),
+    ("40 <= DT < 50", 40, 50),
+    ("50 <= DT < 60", 50, 60),
+    ("60 <= DT < 70", 60, 70),
+    ("70 <= DT < 80", 70, 80),
+    ("DT >= 80", 80, None),
+]
+
+
+def prepare_score_validation_forward_returns(history_df):
+    """Use saved daily snapshots to calculate forward returns without downloading prices."""
     required_columns = {"snapshot_date", "股票代號", "股票名稱", "收盤價", "DeepTrend分數"}
     if history_df.empty or not required_columns.issubset(history_df.columns):
         return pd.DataFrame()
@@ -1733,17 +1745,71 @@ def build_score_validation_result(history_df, score_threshold):
             stock_rows[f"{horizon}日後收盤價"] = future_close
             stock_rows[f"{horizon}日後報酬率"] = (future_close - stock_rows["收盤價"]) / stock_rows["收盤價"] * 100
 
-        signal_rows = stock_rows[stock_rows["DeepTrend分數"] >= score_threshold].copy()
-        if signal_rows.empty:
-            continue
-
-        rows.append(signal_rows)
+        rows.append(stock_rows)
 
     if not rows:
         return pd.DataFrame()
 
-    result_df = pd.concat(rows, ignore_index=True)
+    return pd.concat(rows, ignore_index=True)
+
+
+def build_score_validation_result(history_df, score_threshold):
+    """Calculate forward returns after each DeepTrend score threshold event."""
+    work_df = prepare_score_validation_forward_returns(history_df)
+    if work_df.empty:
+        return pd.DataFrame()
+
+    result_df = work_df[work_df["DeepTrend分數"] >= score_threshold].copy()
+    if result_df.empty:
+        return pd.DataFrame()
+
     return result_df.sort_values(["snapshot_date", "DeepTrend分數"], ascending=[False, False])
+
+
+def score_bucket_mask(score_series, lower, upper):
+    """Return a boolean mask for one DeepTrend score interval."""
+    if lower is None:
+        return score_series < upper
+    if upper is None:
+        return score_series >= lower
+    return score_series.ge(lower) & score_series.lt(upper)
+
+
+def summarize_score_validation_slice(signal_df):
+    """Summarize a validation slice by signal count, unique stocks, returns, and win rates."""
+    total_signals = len(signal_df)
+    unique_stocks = signal_df["股票代號"].nunique() if "股票代號" in signal_df.columns else 0
+    summary = {
+        "總訊號數": total_signals,
+        "獨立股票數": unique_stocks,
+        "平均每檔觸發": total_signals / unique_stocks if unique_stocks else 0,
+    }
+    for horizon in [1, 3, 5, 10, 20]:
+        col = f"{horizon}日後報酬率"
+        valid_returns = pd.to_numeric(signal_df.get(col, pd.Series(dtype=float)), errors="coerce").dropna()
+        summary[f"{horizon}日平均報酬"] = valid_returns.mean() if not valid_returns.empty else pd.NA
+        summary[f"{horizon}日上漲率"] = valid_returns.gt(0).mean() * 100 if not valid_returns.empty else pd.NA
+    return summary
+
+
+def build_score_interval_validation(history_df):
+    """Compare forward returns across fixed DeepTrend score intervals."""
+    work_df = prepare_score_validation_forward_returns(history_df)
+    if work_df.empty:
+        return pd.DataFrame()
+
+    score_series = pd.to_numeric(work_df["DeepTrend分數"], errors="coerce")
+    rows = []
+    for label, lower, upper in SCORE_VALIDATION_BUCKETS:
+        bucket_df = work_df[score_bucket_mask(score_series, lower, upper)].copy()
+        summary = summarize_score_validation_slice(bucket_df)
+        rows.append(
+            {
+                "區間": label,
+                **summary,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def validation_summary(result_df):
@@ -1877,6 +1943,72 @@ def render_score_validation(stock_df):
     valid_score_count = pd.to_numeric(history_df["DeepTrend分數"], errors="coerce").notna().sum()
     if valid_score_count == 0:
         st.info("目前歷史資料中還沒有 DeepTrend 分數。之後每日更新累積後，就能開始驗證。")
+        return
+
+    validation_mode = st.radio(
+        "驗證模式",
+        ["達標模式", "區間模式"],
+        horizontal=True,
+        help="達標模式看 DeepTrend 高於某個門檻後的表現；區間模式比較不同分數帶的後續表現。",
+    )
+
+    if validation_mode == "區間模式":
+        st.info(
+            "區間模式用固定 DeepTrend 分數帶比較後續表現，"
+            "可以觀察分數是否越高越好，或是否存在 40~60 這類甜蜜區。"
+        )
+        interval_df = build_score_interval_validation(history_df)
+        if interval_df.empty:
+            st.info("目前沒有足夠的分數歷史快照可做區間驗證。")
+            return
+
+        display_df = interval_df.copy()
+        display_df["總訊號數"] = display_df["總訊號數"].map(format_integer)
+        display_df["獨立股票數"] = display_df["獨立股票數"].map(format_integer)
+        display_df["平均每檔觸發"] = display_df["平均每檔觸發"].map(lambda value: format_number(value, 2))
+        for horizon in [1, 3, 5, 10, 20]:
+            avg_col = f"{horizon}日平均報酬"
+            win_col = f"{horizon}日上漲率"
+            display_df[avg_col] = display_df[avg_col].map(
+                lambda value: f"{format_number(value, 2)}%" if pd.notna(value) else "N/A"
+            )
+            display_df[win_col] = display_df[win_col].map(
+                lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "N/A"
+            )
+
+        st.markdown("### 分數區間比較表")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        chart_source = interval_df[["區間", "1日平均報酬", "3日平均報酬", "5日平均報酬"]].copy()
+        chart_source = chart_source.melt(id_vars="區間", var_name="觀察天數", value_name="平均報酬率")
+        chart_source = chart_source.dropna(subset=["平均報酬率"])
+        if chart_source.empty:
+            st.info("目前區間資料還不足，暫不繪製平均報酬圖。")
+        else:
+            fig = go.Figure()
+            for horizon_label in ["1日平均報酬", "3日平均報酬", "5日平均報酬"]:
+                horizon_df = chart_source[chart_source["觀察天數"].eq(horizon_label)]
+                fig.add_trace(
+                    go.Bar(
+                        x=horizon_df["區間"],
+                        y=horizon_df["平均報酬率"],
+                        name=horizon_label.replace("平均報酬", "日後"),
+                    )
+                )
+            fig.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=30, b=10),
+                yaxis_title="平均報酬率 (%)",
+                barmode="group",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.download_button(
+            "下載分數區間驗證 CSV",
+            data=interval_df.to_csv(index=False, encoding="utf-8-sig"),
+            file_name="score_interval_validation.csv",
+            mime="text/csv",
+        )
         return
 
     col1, col2 = st.columns([1, 2])
