@@ -62,6 +62,7 @@ from plotly.subplots import make_subplots
 
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
+UNIVERSE_RESULT_FILE = BASE_DIR / "output" / "universe_analysis_result.xlsx"
 STOCK_ANALYSIS_HISTORY_FILE = BASE_DIR / "output" / "stock_analysis_history.csv"
 CHIP_DAILY_FILE = BASE_DIR / "output" / "chip_daily.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
@@ -826,6 +827,17 @@ def load_stock_result():
     except FileNotFoundError:
         st.error(f"找不到分析結果檔案：{RESULT_FILE}")
         st.stop()
+
+
+@st.cache_data(ttl=600)
+def load_universe_result():
+    """Load the independent 150-stock market-pool analysis file when available."""
+    try:
+        return pd.read_excel(UNIVERSE_RESULT_FILE)
+    except FileNotFoundError:
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def prepare_stock_data(df):
@@ -3483,9 +3495,14 @@ def render_backtest_lab(df):
     render_backtest_record_history()
 
 
-def render_market_temperature(df):
+def render_market_temperature(
+    df,
+    title="🌡️ Deep Trend 觀察池溫度",
+    source_label="觀察池",
+    scope_note="此分數只代表目前 Deep Trend 觀察清單，不代表全市場。",
+):
     """Render the Deep Trend observation-pool temperature page and strong-group ranking."""
-    st.subheader("🌡️ Deep Trend 觀察池溫度")
+    st.subheader(title)
 
     if df.empty:
         st.info("目前沒有股票資料可統計。")
@@ -3506,7 +3523,7 @@ def render_market_temperature(df):
     with attack_col:
         st.metric("攻擊溫度分數", f"{stats['攻擊溫度分數']:.1f} / 100", stats["攻擊溫度狀態"])
     st.caption(
-        f"觀察池判斷：{stats['綜合判斷']}。趨勢結構看多頭排列比例；攻擊溫度看創高、量增、漲跌停與低價轉強。此分數只代表目前 Deep Trend 觀察清單，不代表全市場。"
+        f"{source_label}判斷：{stats['綜合判斷']}。趨勢結構看多頭排列比例；攻擊溫度看創高、量增、漲跌停與低價轉強。{scope_note}"
     )
 
     metric_items = [
@@ -3568,6 +3585,70 @@ def render_market_temperature(df):
             use_container_width=True,
             hide_index=True,
         )
+
+
+def render_market_pool_temperature(universe_df):
+    """Render the neutral 150-stock market-pool temperature without changing the core radar."""
+    if universe_df.empty:
+        st.subheader("🌡️ 市場池溫度")
+        st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
+        return
+
+    render_market_temperature(
+        universe_df,
+        title="🌡️ 市場池溫度",
+        source_label="市場池",
+        scope_note="此分數代表 150 檔中性市場池，不等同全市場，但比個人觀察池更接近大環境。",
+    )
+
+
+def render_deeptrend_candidates(universe_df):
+    """Show the top DeepTrend candidates from the neutral market pool only."""
+    st.subheader("🔭 DeepTrend 候選股")
+    st.caption("從 150 檔市場池中挑出前 30 檔，股票雷達仍維持核心 watchlist，不直接塞滿全部市場池。")
+
+    if universe_df.empty:
+        st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
+        return
+
+    candidate_df = universe_df.copy()
+    for column in ["DeepTrend分數", "分數變化率", "分數變化", "技術面分數", "籌碼分數", "量價分數"]:
+        if column in candidate_df.columns:
+            candidate_df[column] = pd.to_numeric(candidate_df[column], errors="coerce")
+
+    def candidate_number(column):
+        if column not in candidate_df.columns:
+            return pd.Series(0, index=candidate_df.index)
+        return pd.to_numeric(candidate_df[column], errors="coerce").fillna(0)
+
+    candidate_df["排序分數"] = (
+        candidate_number("DeepTrend分數")
+        + candidate_number("分數變化率") * 0.2
+        + candidate_number("量價分數") * 0.1
+    )
+    candidate_df = candidate_df.sort_values(
+        ["排序分數", "DeepTrend分數", "分數變化率"],
+        ascending=[False, False, False],
+    ).head(30)
+
+    display_cols = [
+        "股票代號",
+        "股票名稱",
+        "DeepTrend分數",
+        "分數變化率",
+        "狀態",
+        "綜合判斷",
+        "技術面",
+        "籌碼面",
+    ]
+    display_cols = [col for col in display_cols if col in candidate_df.columns]
+
+    display_df = candidate_df[display_cols].copy()
+    if "分數變化率" in display_df.columns:
+        display_df["分數變化率"] = display_df["分數變化率"].map(
+            lambda value: "" if pd.isna(value) else f"{value:+.2f}%"
+        )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
 def render_k_chart(k_df, chart_mode="candlestick"):
@@ -3731,6 +3812,8 @@ view_options = [
     "✅ 分數驗證",
     "🔎 個股查詢",
     "🌡️ 觀察池溫度",
+    "🌡️ 市場池溫度",
+    "🔭 DeepTrend 候選股",
     "🧾 籌碼查帳",
     "📋 詳細表格",
     "🩺 資料健康檢查",
@@ -3760,5 +3843,13 @@ elif active_view == "✅ 分數驗證":
     render_score_validation(df)
 elif active_view == "🩺 資料健康檢查":
     render_data_health(df)
-else:
+elif active_view == "🌡️ 觀察池溫度":
     render_market_temperature(df)
+elif active_view == "🌡️ 市場池溫度":
+    universe_raw_df = load_universe_result()
+    universe_df = apply_realtime_prices(prepare_stock_data(universe_raw_df)) if not universe_raw_df.empty else universe_raw_df
+    render_market_pool_temperature(universe_df)
+else:
+    universe_raw_df = load_universe_result()
+    universe_df = apply_realtime_prices(prepare_stock_data(universe_raw_df)) if not universe_raw_df.empty else universe_raw_df
+    render_deeptrend_candidates(universe_df)

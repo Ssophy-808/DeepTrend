@@ -9,9 +9,11 @@ import urllib3
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 WATCHLIST_FILE = BASE_DIR / "watchlist.csv"
+UNIVERSE_FILE = BASE_DIR / "universe.csv"
 CHIP_FILE = BASE_DIR / "chip.csv"
 CHIP_DAILY_FILE = OUTPUT_DIR / "chip_daily.csv"
 RESULT_FILE = OUTPUT_DIR / "stock_analysis_result.xlsx"
+UNIVERSE_RESULT_FILE = OUTPUT_DIR / "universe_analysis_result.xlsx"
 HISTORY_FILE = OUTPUT_DIR / "stock_analysis_history.csv"
 MIN_RESULT_SUCCESS_RATIO = 0.8
 
@@ -374,8 +376,8 @@ def classify_score(score):
     return "❌避開", "觀望"
 
 
-def main():
-    watchlist = pd.read_csv(WATCHLIST_FILE)
+def analyze_stock_list(input_file, output_file, label, use_previous_scores=True):
+    stock_list = pd.read_csv(input_file)
     chip_data = pd.read_csv(CHIP_FILE)
     today_text = date.today().isoformat()
     chip_latest_date = latest_chip_daily_date()
@@ -385,10 +387,10 @@ def main():
             "Using the latest available trading day."
         )
 
-    previous_scores = load_previous_scores()
+    previous_scores = load_previous_scores() if use_previous_scores else {}
     results = []
 
-    for _, row in watchlist.iterrows():
+    for _, row in stock_list.iterrows():
         original_ticker = str(row["ticker"]).strip()
         stock_name = row["name"]
         ticker, history = get_official_history(original_ticker)
@@ -535,18 +537,28 @@ def main():
     result_df = pd.DataFrame(results)
 
     if result_df.empty:
-        raise RuntimeError("沒有產生任何分析結果，請檢查官方資料來源或 watchlist.csv。")
+        raise RuntimeError(f"沒有產生任何 {label} 分析結果，請檢查官方資料來源或 {input_file.name}。")
 
-    min_required_rows = int(len(watchlist) * MIN_RESULT_SUCCESS_RATIO)
+    min_required_rows = int(len(stock_list) * MIN_RESULT_SUCCESS_RATIO)
     if len(result_df) < min_required_rows:
         raise RuntimeError(
-            f"Analysis result is incomplete: {len(result_df)}/{len(watchlist)} rows. "
+            f"{label} analysis result is incomplete: {len(result_df)}/{len(stock_list)} rows. "
             f"Need at least {min_required_rows}. Existing result file was not overwritten."
         )
 
     result_df = result_df.sort_values(by="技術分數", ascending=False)
-    result_df.to_excel(RESULT_FILE, index=False)
-    print(f"完成，已輸出 {RESULT_FILE}")
+    result_df.to_excel(output_file, index=False)
+    print(f"完成 {label}，已輸出 {output_file}")
+
+
+def main():
+    analyze_stock_list(WATCHLIST_FILE, RESULT_FILE, "watchlist", use_previous_scores=True)
+
+    if UNIVERSE_FILE.exists():
+        try:
+            analyze_stock_list(UNIVERSE_FILE, UNIVERSE_RESULT_FILE, "universe", use_previous_scores=False)
+        except Exception as exc:
+            print(f"universe 分析失敗，保留上一份市場池結果：{exc}")
 
 
 if __name__ == "__main__":

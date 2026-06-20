@@ -10,6 +10,7 @@ from requests.exceptions import RequestException
 
 BASE_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = BASE_DIR / "watchlist.csv"
+UNIVERSE_FILE = BASE_DIR / "universe.csv"
 CHIP_FILE = BASE_DIR / "chip.csv"
 OUTPUT_DIR = BASE_DIR / "output"
 CHIP_DAILY_FILE = OUTPUT_DIR / "chip_daily.csv"
@@ -318,9 +319,26 @@ def save_chip_daily(chip_days):
     return len(new_df)
 
 
+def load_ticker_universe():
+    ticker_frames = []
+    for source_file in [WATCHLIST_FILE, UNIVERSE_FILE]:
+        if not source_file.exists():
+            continue
+        source_df = pd.read_csv(source_file)
+        if "ticker" not in source_df.columns:
+            continue
+        ticker_frames.append(source_df[["ticker"]])
+
+    if not ticker_frames:
+        raise FileNotFoundError("找不到 watchlist.csv 或 universe.csv 可更新籌碼")
+
+    combined = pd.concat(ticker_frames, ignore_index=True)
+    combined["ticker"] = combined["ticker"].astype(str).map(normalize_chip_ticker)
+    return combined["ticker"].drop_duplicates().tolist()
+
+
 def main():
-    watchlist = pd.read_csv(WATCHLIST_FILE)
-    tickers = [normalize_chip_ticker(ticker) for ticker in watchlist["ticker"].astype(str)]
+    tickers = load_ticker_universe()
     chip_days = fetch_recent_chip_days()
 
     if not chip_days:
