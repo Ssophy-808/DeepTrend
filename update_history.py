@@ -57,6 +57,20 @@ def load_current_snapshot():
     if WATCHLIST_FILE.exists():
         watchlist_df = pd.read_csv(WATCHLIST_FILE)
         min_required_rows = int(len(watchlist_df) * MIN_SNAPSHOT_SUCCESS_RATIO)
+        if len(snapshot_df) > len(watchlist_df):
+            raise ValueError(
+                f"Snapshot has more rows than watchlist: {len(snapshot_df)}/{len(watchlist_df)} rows. "
+                "History only accepts watchlist analysis, not universe analysis."
+            )
+        if {"ticker"}.issubset(watchlist_df.columns) and {"股票代號"}.issubset(snapshot_df.columns):
+            watchlist_codes = set(watchlist_df["ticker"].astype(str).str.split(".").str[0])
+            snapshot_codes = set(snapshot_df["股票代號"].astype(str).str.split(".").str[0])
+            extra_codes = sorted(snapshot_codes - watchlist_codes)
+            if extra_codes:
+                raise ValueError(
+                    "Snapshot contains stocks outside watchlist. "
+                    f"History was not updated. Extra codes: {', '.join(extra_codes[:10])}"
+                )
         if len(snapshot_df) < min_required_rows:
             raise ValueError(
                 f"Snapshot is incomplete: {len(snapshot_df)}/{len(watchlist_df)} rows. "
