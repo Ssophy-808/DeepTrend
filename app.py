@@ -40,6 +40,7 @@
 # Imports and constants
 # =========================
 
+import math
 import re
 import subprocess
 import sys
@@ -3018,6 +3019,30 @@ def market_temperature_state(score):
     return "過熱"
 
 
+def attack_temperature_advice(score):
+    """Return the action label and practical suggestions for an attack-temperature score."""
+    if score < 20:
+        return "❄ 極冷", ["降低持股比例", "以觀察為主", "等待轉強訊號"]
+    if score < 40:
+        return "🌥 偏冷", ["可少量試單", "避免追價", "優先觀察強勢族群"]
+    if score < 60:
+        return "🌤 中性", ["可少量布局", "分批進場", "關注分數歷史轉強個股"]
+    if score < 80:
+        return "🔥 偏熱", ["積極尋找轉強股", "可提高持股比例", "留意熱門族群"]
+    return "🚀 全面攻擊", ["市場資金活躍", "可提高持股比例", "優先布局強勢股", "注意過熱風險"]
+
+
+def sync_level(correlation):
+    """Translate correlation into a readable market-synchronization label."""
+    if pd.isna(correlation):
+        return "資料不足"
+    if correlation >= 0.9:
+        return "高度同步"
+    if correlation >= 0.7:
+        return "中度同步"
+    return "低同步"
+
+
 def trend_structure_state(score):
     """Map the moving-average breadth score to a trend-structure label."""
     if score >= 70:
@@ -3055,8 +3080,44 @@ def group_heat_level(strong_ratio):
     return "🔥"
 
 
+def temperature_ratio_vector(snapshot_df):
+    """Build a comparable ratio vector from one temperature snapshot table."""
+    if snapshot_df.empty:
+        return pd.Series(dtype=float)
+    total = len(snapshot_df)
+    if total == 0:
+        return pd.Series(dtype=float)
+    return pd.Series(
+        {
+            "多頭排列": snapshot_df["ma_bull"].sum() / total,
+            "創20日高": snapshot_df["high20"].sum() / total,
+            "創60日高": snapshot_df["high60"].sum() / total,
+            "量能放大": snapshot_df["volume_surge"].sum() / total,
+            "漲停": snapshot_df["limit_up"].sum() / total,
+            "跌停": snapshot_df["limit_down"].sum() / total,
+            "低價轉強": snapshot_df["under30_turning"].sum() / total,
+        },
+        dtype=float,
+    )
+
+
+def calculate_pool_sync(observation_snapshot_df, market_snapshot_df):
+    """Compare observation-pool and market-pool structure using their temperature factor ratios."""
+    obs_vector = temperature_ratio_vector(observation_snapshot_df)
+    market_vector = temperature_ratio_vector(market_snapshot_df)
+    if obs_vector.empty or market_vector.empty:
+        return pd.NA
+    comparison_df = pd.concat([obs_vector, market_vector], axis=1).dropna()
+    comparison_df.columns = ["觀察池", "市場池"]
+    if len(comparison_df) < 2:
+        return pd.NA
+    if comparison_df["觀察池"].nunique() <= 1 or comparison_df["市場池"].nunique() <= 1:
+        return pd.NA
+    return float(comparison_df["觀察池"].corr(comparison_df["市場池"]))
+
+
 @st.cache_data(ttl=900)
-def build_market_temperature(stock_records, enable_news=False):
+def build_market_temperature(stock_records, enable_news=False, save_group_history=True):
     """Calculate observation-pool temperature and group rankings from lightweight latest K data."""
     snapshots = []
     for record in stock_records:
@@ -3142,10 +3203,15 @@ def build_market_temperature(stock_records, enable_news=False):
                 ma_count = int(group_rows_df["ma_bull"].sum())
                 high20_count = int(group_rows_df["high20"].sum())
                 volume_count = int(group_rows_df["volume_surge"].sum())
-                # 強勢族群公式：多頭排列數 + 創20日高數 + 量增數。
-                strong_count = ma_count + high20_count + volume_count
                 stock_count = len(group_rows_df)
+                if stock_count < 3:
+                    continue
+
+                # 強勢族群公式：多頭排列數 + 創20日高數 + 量增數。
+                # 排行先用強勢比例衡量族群內部強度，再乘上 log(股票數+1) 避免 1 檔族群 100% 失真。
+                strong_count = ma_count + high20_count + volume_count
                 strong_ratio = strong_count / (stock_count * 3) * 100 if stock_count else 0
+                weighted_raw_score = strong_ratio * math.log(stock_count + 1)
                 group_rows.append(
                     {
                         "族群": group_name,
@@ -3155,13 +3221,26 @@ def build_market_temperature(stock_records, enable_news=False):
                         "量增數": volume_count,
                         "強勢分數": strong_count,
                         "強勢比例": strong_ratio,
+                        "加權原始分數": weighted_raw_score,
                         "熱度等級": group_heat_level(strong_ratio),
+                        "檔數": stock_count,
+                        "偏多檔數": ma_count,
+                        "強勢檔數": strong_count,
                     }
                 )
-            group_rank = pd.DataFrame(group_rows).sort_values(
-                ["強勢比例", "強勢分數", "股票數"],
-                ascending=[False, False, False],
-            )
+            group_rank = pd.DataFrame(group_rows)
+            if not group_rank.empty:
+                max_raw_score = float(group_rank["加權原始分數"].max())
+                group_rank["熱度分數"] = (
+                    group_rank["加權原始分數"] / max_raw_score * 100 if max_raw_score > 0 else 0
+                )
+                group_rank = add_group_heat_trend(group_rank)
+                if save_group_history:
+                    save_group_heat_history(group_rank)
+                group_rank = group_rank.sort_values(
+                    ["熱度分數", "強勢比例", "股票數"],
+                    ascending=[False, False, False],
+                )
 
     return stats, snapshot_df, group_rank
 
@@ -3658,6 +3737,12 @@ def render_market_temperature(
         f"{source_label}判斷：{stats['綜合判斷']}。趨勢結構看多頭排列比例；攻擊溫度看創高、量增、漲跌停與低價轉強。{scope_note}"
     )
 
+    advice_label, advice_items = attack_temperature_advice(stats["攻擊溫度分數"])
+    with st.container(border=True):
+        st.markdown(f"### 操作建議｜{advice_label}")
+        for item in advice_items:
+            st.markdown(f"• {item}")
+
     metric_items = [
         ("統計股票數", stats["統計股票數"]),
         ("多頭排列股票數", stats["5MA > 10MA > 20MA"]),
@@ -3674,18 +3759,47 @@ def render_market_temperature(
         st.info("目前沒有可統計股票。")
         return
 
+    if source_label == "觀察池":
+        universe_df = load_universe_result()
+        if universe_df.empty:
+            st.info("市場同步性：尚未產生市場池資料，無法比較觀察池與市場池。")
+        else:
+            universe_records = tuple(
+                (str(row["股票代號"]), str(row["股票名稱"]))
+                for _, row in universe_df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
+            )
+            market_stats, market_snapshot_df, _ = build_market_temperature(
+                universe_records,
+                enable_news=False,
+                save_group_history=False,
+            )
+            corr = calculate_pool_sync(snapshot_df, market_snapshot_df)
+            st.markdown("### 市場同步性")
+            sync_cols = st.columns(3)
+            sync_cols[0].metric("相關係數", "N/A" if pd.isna(corr) else f"{corr:.2f}")
+            sync_cols[1].metric("同步程度", sync_level(corr))
+            sync_cols[2].metric("市場池攻擊溫度", f"{market_stats['攻擊溫度分數']:.1f} / 100")
+            st.caption("此處先比較觀察池與市場池的目前溫度因子比例；之後累積每日溫度歷史後，可升級成跨日相關係數。")
+
     st.markdown("### 強勢族群排行")
     if group_rank.empty:
-        st.info("尚無產業分類資料。")
+        st.info("尚無符合條件的產業分類資料。族群至少需要 3 檔股票才列入排行。")
     else:
         st.markdown("#### 今日最強族群")
         medals = ["🥇", "🥈", "🥉"]
         top_groups = group_rank.head(3)
         for index, (_, row) in enumerate(top_groups.iterrows()):
-            st.markdown(f"{medals[index]} {row['族群']}：{row['強勢比例']:.1f}%")
+            st.markdown(f"{medals[index]} {row['族群']}：{row['強勢比例']:.1f}%｜熱度 {row['熱度分數']:.1f}")
 
         display_group = group_rank.head(10).copy()
+        if "加權原始分數" in display_group.columns:
+            display_group = display_group.drop(columns=["加權原始分數"])
+        display_group["熱度分數"] = display_group["熱度分數"].map(lambda value: f"{value:.1f}")
         display_group["強勢比例"] = display_group["強勢比例"].map(lambda value: f"{value:.1f}%")
+        if "7日熱度變化" in display_group.columns:
+            display_group["7日熱度變化"] = display_group["7日熱度變化"].map(
+                lambda value: "" if pd.isna(value) else f"{value:+.1f}"
+            )
         st.dataframe(display_group, use_container_width=True, hide_index=True)
 
     with st.expander("查看個股統計明細"):
