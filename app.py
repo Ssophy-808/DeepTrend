@@ -281,6 +281,22 @@ def official_history_to_kline(history):
     return k_df[["High", "Low", "Close", "Volume"]]
 
 
+def build_kline_data(symbol):
+    """Build K-line chart data, preferring real yfinance OHLC and falling back to official close-line data."""
+    k_df = download_market_data(symbol)
+    if not k_df.empty:
+        close_series = get_series(k_df, "Close")
+        if close_series.notna().sum() >= 20:
+            return k_df, "candlestick", "yfinance OHLC"
+
+    history = get_official_daily_history(symbol)
+    official_df = official_history_to_kline(history)
+    if not official_df.empty:
+        return official_df, "close_line", "official close-line"
+
+    return pd.DataFrame(), "candlestick", ""
+
+
 @st.cache_data(ttl=10)
 def get_twse_realtime_map(tickers):
     """Fetch TWSE realtime quote snapshots for the current watchlist; failures are skipped per ticker."""
@@ -2438,17 +2454,13 @@ def render_detail(filtered_df):
     st.success(selected_row["籌碼面"])
 
     symbol = normalize_tw_symbol(selected_stock)
-    k_df = download_market_data(symbol)
-    chart_mode = "candlestick"
-
-    if k_df.empty:
-        history = get_official_daily_history(symbol)
-        k_df = official_history_to_kline(history)
-        chart_mode = "close_line"
+    k_df, chart_mode, kline_source = build_kline_data(symbol)
 
     if k_df.empty:
         st.warning(f"抓不到 {symbol} 的K線資料。")
         return
+    if chart_mode == "close_line":
+        st.info("yfinance 目前未回傳可用 OHLC，已改用證交所/櫃買官方資料顯示收盤價折線。")
 
     close_series = get_series(k_df, "Close")
 
@@ -2463,11 +2475,13 @@ def render_detail(filtered_df):
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
     k_df["RSI"] = 100 - (100 / (1 + rs))
-    k_df = k_df[k_df["MA20"].notna() & k_df["RSI"].notna()]
+    indicator_df = k_df[k_df["MA20"].notna() & k_df["RSI"].notna()]
 
-    if k_df.empty:
-        st.warning("K線資料不足，無法計算均線與RSI。")
-        return
+    if indicator_df.empty:
+        st.warning("K線資料不足，無法計算完整均線與RSI，先顯示可用價格資料。")
+        k_df["RSI"] = pd.NA
+    else:
+        k_df = indicator_df
 
     debug_kline_data(k_df)
     render_k_chart(k_df, chart_mode=chart_mode)
