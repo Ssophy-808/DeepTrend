@@ -848,7 +848,7 @@ def load_stock_result():
 
 @st.cache_data(ttl=600)
 def load_universe_result():
-    """Load the independent 150-stock market-pool analysis file when available."""
+    """Load the independent 200-stock market-pool analysis file when available."""
     try:
         return pd.read_excel(UNIVERSE_RESULT_FILE)
     except FileNotFoundError:
@@ -3183,6 +3183,140 @@ def calculate_pool_sync(observation_snapshot_df, market_snapshot_df):
     return float(comparison_df["觀察池"].corr(comparison_df["市場池"]))
 
 
+def build_fast_market_temperature_from_result(result_df, save_group_history=False):
+    """Calculate market-pool temperature from precomputed Excel results without downloading K data."""
+    if result_df.empty:
+        stats = {
+            "統計股票數": 0,
+            "5MA > 10MA > 20MA": 0,
+            "收盤創20日高": 0,
+            "收盤創60日高": 0,
+            "成交量大於20日均量1.5倍": 0,
+            "漲停家數": 0,
+            "跌停家數": 0,
+            "股價30元以下且轉強": 0,
+            "觀察池溫度分數": 0,
+            "觀察池狀態": market_temperature_state(0),
+            "趨勢結構分數": 0,
+            "趨勢結構狀態": trend_structure_state(0),
+            "攻擊溫度分數": 0,
+            "攻擊溫度狀態": market_temperature_state(0),
+            "綜合判斷": "目前沒有可統計股票",
+        }
+        return stats, pd.DataFrame(), pd.DataFrame()
+
+    snapshot_df = result_df.copy()
+    for column in ["收盤價", "5日線", "10日線", "20日線", "成交量", "5日均量", "20日高點", "今日漲跌幅"]:
+        if column in snapshot_df.columns:
+            snapshot_df[column] = pd.to_numeric(snapshot_df[column], errors="coerce")
+
+    close = snapshot_df.get("收盤價", pd.Series(index=snapshot_df.index, dtype=float))
+    ma5 = snapshot_df.get("5日線", pd.Series(index=snapshot_df.index, dtype=float))
+    ma10 = snapshot_df.get("10日線", pd.Series(index=snapshot_df.index, dtype=float))
+    ma20 = snapshot_df.get("20日線", pd.Series(index=snapshot_df.index, dtype=float))
+    volume = snapshot_df.get("成交量", pd.Series(index=snapshot_df.index, dtype=float))
+    avg_volume_5 = snapshot_df.get("5日均量", pd.Series(index=snapshot_df.index, dtype=float))
+    high20 = snapshot_df.get("20日高點", pd.Series(index=snapshot_df.index, dtype=float))
+    change_pct = snapshot_df.get("今日漲跌幅", pd.Series(0, index=snapshot_df.index, dtype=float))
+    signal_text = (
+        snapshot_df.get("量價異常", pd.Series("", index=snapshot_df.index)).fillna("").astype(str)
+        + "｜"
+        + snapshot_df.get("技術面", pd.Series("", index=snapshot_df.index)).fillna("").astype(str)
+    )
+
+    snapshot_df["ma_bull"] = (ma5 > ma10) & (ma10 > ma20)
+    snapshot_df["high20"] = close >= high20
+    snapshot_df["high60"] = False
+    snapshot_df["volume_surge"] = (volume > avg_volume_5 * 1.5) | signal_text.str.contains("爆量|成交量放大|量能溫和放大|量能", na=False)
+    snapshot_df["limit_up"] = change_pct >= 9.5
+    snapshot_df["limit_down"] = change_pct <= -9.5
+    snapshot_df["under30_turning"] = (close <= 30) & snapshot_df["ma_bull"] & (close > ma20)
+    for column in ["新聞熱度", "news_count", "news_titles", "positive_keywords", "risk_keywords", "news_score"]:
+        if column not in snapshot_df.columns:
+            snapshot_df[column] = "" if column != "news_score" else 0
+
+    total = len(snapshot_df)
+    stats = {
+        "統計股票數": total,
+        "5MA > 10MA > 20MA": int(snapshot_df["ma_bull"].sum()),
+        "收盤創20日高": int(snapshot_df["high20"].sum()),
+        "收盤創60日高": int(snapshot_df["high60"].sum()),
+        "成交量大於20日均量1.5倍": int(snapshot_df["volume_surge"].sum()),
+        "漲停家數": int(snapshot_df["limit_up"].sum()),
+        "跌停家數": int(snapshot_df["limit_down"].sum()),
+        "股價30元以下且轉強": int(snapshot_df["under30_turning"].sum()),
+    }
+
+    bull_ratio = stats["5MA > 10MA > 20MA"] / total if total else 0
+    high20_ratio = stats["收盤創20日高"] / total if total else 0
+    high60_ratio = stats["收盤創60日高"] / total if total else 0
+    volume_ratio = stats["成交量大於20日均量1.5倍"] / total if total else 0
+    limit_up_ratio = stats["漲停家數"] / total if total else 0
+    limit_down_ratio = stats["跌停家數"] / total if total else 0
+    low_price_strong_ratio = stats["股價30元以下且轉強"] / total if total else 0
+
+    trend_score = bull_ratio * 100
+    attack_score = (
+        bull_ratio * 25
+        + high20_ratio * 20
+        + high60_ratio * 20
+        + volume_ratio * 15
+        + limit_up_ratio * 15
+        + low_price_strong_ratio * 5
+        - limit_down_ratio * 20
+    )
+    stats["趨勢結構分數"] = round(max(0, min(100, trend_score)), 1)
+    stats["趨勢結構狀態"] = trend_structure_state(stats["趨勢結構分數"])
+    stats["攻擊溫度分數"] = round(max(0, min(100, attack_score)), 1)
+    stats["攻擊溫度狀態"] = market_temperature_state(stats["攻擊溫度分數"])
+    stats["觀察池溫度分數"] = stats["攻擊溫度分數"]
+    stats["觀察池狀態"] = stats["攻擊溫度狀態"]
+    stats["綜合判斷"] = market_temperature_summary(stats["趨勢結構狀態"], stats["攻擊溫度狀態"])
+
+    group_rank = pd.DataFrame()
+    group_df = load_group_data()
+    if not group_df.empty:
+        snapshot_df["股票代號_key"] = snapshot_df["股票代號"].map(stock_code_key)
+        merged = group_df.merge(snapshot_df, on="股票代號_key", how="inner")
+        group_rows = []
+        for group_name, group_rows_df in merged.groupby("族群"):
+            stock_count = len(group_rows_df)
+            if stock_count < 3:
+                continue
+            ma_count = int(group_rows_df["ma_bull"].sum())
+            high20_count = int(group_rows_df["high20"].sum())
+            volume_count = int(group_rows_df["volume_surge"].sum())
+            strong_count = ma_count + high20_count + volume_count
+            strong_ratio = strong_count / (stock_count * 3) * 100 if stock_count else 0
+            weighted_raw_score = strong_ratio * math.log(stock_count + 1)
+            group_rows.append(
+                {
+                    "族群": group_name,
+                    "股票數": stock_count,
+                    "多頭排列數": ma_count,
+                    "創20日高數": high20_count,
+                    "量增數": volume_count,
+                    "強勢分數": strong_count,
+                    "強勢比例": strong_ratio,
+                    "加權原始分數": weighted_raw_score,
+                    "熱度等級": group_heat_level(strong_ratio),
+                    "檔數": stock_count,
+                    "偏多檔數": ma_count,
+                    "強勢檔數": strong_count,
+                }
+            )
+        group_rank = pd.DataFrame(group_rows)
+        if not group_rank.empty:
+            max_raw_score = float(group_rank["加權原始分數"].max())
+            group_rank["熱度分數"] = group_rank["加權原始分數"] / max_raw_score * 100 if max_raw_score > 0 else 0
+            group_rank = add_group_heat_trend(group_rank)
+            if save_group_history:
+                save_group_heat_history(group_rank)
+            group_rank = group_rank.sort_values(["熱度分數", "強勢比例", "股票數"], ascending=[False, False, False])
+
+    return stats, snapshot_df, group_rank
+
+
 @st.cache_data(ttl=900)
 def build_market_temperature(stock_records, enable_news=False, save_group_history=True):
     """Calculate observation-pool temperature and group rankings from lightweight latest K data."""
@@ -3778,6 +3912,7 @@ def render_market_temperature(
     title="🌡️ Deep Trend 觀察池溫度",
     source_label="觀察池",
     scope_note="此分數只代表目前 Deep Trend 觀察清單，不代表全市場。",
+    precomputed_temperature=None,
 ):
     """Render the Deep Trend observation-pool temperature page and strong-group ranking."""
     st.subheader(title)
@@ -3786,14 +3921,17 @@ def render_market_temperature(
         st.info("目前沒有股票資料可統計。")
         return
 
-    enable_news = st.checkbox("啟用新聞熱度", value=False, key="temperature_enable_news")
-    stock_records = tuple(
-        (str(row["股票代號"]), str(row["股票名稱"]))
-        for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
-    )
+    if precomputed_temperature is None:
+        enable_news = st.checkbox("啟用新聞熱度", value=False, key="temperature_enable_news")
+        stock_records = tuple(
+            (str(row["股票代號"]), str(row["股票名稱"]))
+            for _, row in df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
+        )
 
-    with st.spinner("正在統計觀察池溫度..."):
-        stats, snapshot_df, group_rank = build_market_temperature(stock_records, enable_news=enable_news)
+        with st.spinner("正在統計觀察池溫度..."):
+            stats, snapshot_df, group_rank = build_market_temperature(stock_records, enable_news=enable_news)
+    else:
+        stats, snapshot_df, group_rank = precomputed_temperature
 
     trend_col, attack_col = st.columns(2)
     with trend_col:
@@ -3831,15 +3969,7 @@ def render_market_temperature(
         if universe_df.empty:
             st.info("市場同步性：尚未產生市場池資料，無法比較觀察池與市場池。")
         else:
-            universe_records = tuple(
-                (str(row["股票代號"]), str(row["股票名稱"]))
-                for _, row in universe_df[["股票代號", "股票名稱"]].drop_duplicates(subset=["股票代號"]).iterrows()
-            )
-            market_stats, market_snapshot_df, _ = build_market_temperature(
-                universe_records,
-                enable_news=False,
-                save_group_history=False,
-            )
+            market_stats, market_snapshot_df, _ = build_fast_market_temperature_from_result(universe_df)
             corr = calculate_pool_sync(snapshot_df, market_snapshot_df)
             st.markdown("### 市場同步性")
             sync_cols = st.columns(3)
@@ -3901,24 +4031,27 @@ def render_market_temperature(
 
 
 def render_market_pool_temperature(universe_df):
-    """Render the neutral 150-stock market-pool temperature without changing the core radar."""
+    """Render the neutral 200-stock market-pool temperature without changing the core radar."""
     if universe_df.empty:
         st.subheader("🌡️ 市場池溫度")
         st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
         return
 
+    stats, snapshot_df, group_rank = build_fast_market_temperature_from_result(universe_df, save_group_history=True)
+
     render_market_temperature(
         universe_df,
         title="🌡️ 市場池溫度",
         source_label="市場池",
-        scope_note="此分數代表 150 檔中性市場池，不等同全市場，但比個人觀察池更接近大環境。",
+        scope_note="此分數代表 200 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
+        precomputed_temperature=(stats, snapshot_df, group_rank),
     )
 
 
 def render_deeptrend_candidates(universe_df):
     """Show the top DeepTrend candidates from the neutral market pool only."""
     st.subheader("🔭 DeepTrend 候選股")
-    st.caption("從 150 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
+    st.caption("從 200 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
 
     if universe_df.empty:
         st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
