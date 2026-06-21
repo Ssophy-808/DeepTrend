@@ -4043,7 +4043,7 @@ def render_market_pool_temperature(universe_df):
         universe_df,
         title="🌡️ 市場池溫度",
         source_label="市場池",
-        scope_note="此分數代表 200 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
+        scope_note="此分數代表目前 200 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
         precomputed_temperature=(stats, snapshot_df, group_rank),
     )
 
