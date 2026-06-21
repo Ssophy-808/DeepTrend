@@ -3904,7 +3904,7 @@ def render_market_pool_temperature(universe_df):
 def render_deeptrend_candidates(universe_df):
     """Show the top DeepTrend candidates from the neutral market pool only."""
     st.subheader("🔭 DeepTrend 候選股")
-    st.caption("從 150 檔市場池中挑出前 30 檔，股票雷達仍維持核心 watchlist，不直接塞滿全部市場池。")
+    st.caption("從 150 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
 
     if universe_df.empty:
         st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
@@ -3920,20 +3920,87 @@ def render_deeptrend_candidates(universe_df):
             return pd.Series(0, index=candidate_df.index)
         return pd.to_numeric(candidate_df[column], errors="coerce").fillna(0)
 
-    candidate_df["排序分數"] = (
-        candidate_number("DeepTrend分數")
-        + candidate_number("分數變化率") * 0.2
-        + candidate_number("量價分數") * 0.1
+    def candidate_text(column):
+        if column not in candidate_df.columns:
+            return pd.Series("", index=candidate_df.index)
+        return candidate_df[column].fillna("").astype(str)
+
+    text_source = (
+        candidate_text("狀態")
+        + "｜"
+        + candidate_text("綜合判斷")
+        + "｜"
+        + candidate_text("技術面")
+        + "｜"
+        + candidate_text("籌碼面")
     )
+    deeptrend_score = candidate_number("DeepTrend分數")
+    score_change = candidate_number("分數變化")
+    score_change_rate = candidate_number("分數變化率")
+    volume_price_score = candidate_number("量價分數")
+
+    candidate_df["分數達標"] = deeptrend_score >= 40
+    candidate_df["分數上升"] = score_change > 0
+    candidate_df["明顯升溫"] = score_change >= 10
+    candidate_df["快速升溫"] = score_change >= 20
+    candidate_df["接近20日高"] = text_source.str.contains("接近20日高", na=False)
+    candidate_df["突破20日高"] = text_source.str.contains("突破20日高|帶量突破20日高", na=False)
+    candidate_df["成交量放大"] = text_source.str.contains("爆量|成交量放大|量能溫和放大|量能", na=False)
+    candidate_df["多頭排列"] = text_source.str.contains("多頭排列", na=False)
+    candidate_df["轉強訊號"] = text_source.str.contains("轉強|強勢|偏多", na=False)
+    candidate_df["高分鈍化"] = (deeptrend_score >= 60) & (score_change <= 2)
+
+    candidate_df["候選分數"] = (
+        candidate_df["分數達標"].astype(int) * 20
+        + candidate_df["分數上升"].astype(int) * 20
+        + candidate_df["明顯升溫"].astype(int) * 15
+        + candidate_df["快速升溫"].astype(int) * 20
+        + candidate_df["接近20日高"].astype(int) * 10
+        + candidate_df["突破20日高"].astype(int) * 20
+        + candidate_df["成交量放大"].astype(int) * 15
+        + candidate_df["多頭排列"].astype(int) * 10
+        + candidate_df["轉強訊號"].astype(int) * 10
+        + deeptrend_score.clip(lower=0) * 0.08
+        + volume_price_score.clip(lower=0) * 0.08
+        - candidate_df["高分鈍化"].astype(int) * 15
+    )
+
+    def candidate_reason(row):
+        reasons = []
+        if row.get("快速升溫"):
+            reasons.append("快速升溫")
+        elif row.get("明顯升溫"):
+            reasons.append("分數明顯上升")
+        elif row.get("分數上升"):
+            reasons.append("分數上升")
+        if row.get("突破20日高"):
+            reasons.append("突破20日高")
+        elif row.get("接近20日高"):
+            reasons.append("接近20日高")
+        if row.get("成交量放大"):
+            reasons.append("成交量放大")
+        if row.get("多頭排列"):
+            reasons.append("多頭排列")
+        if row.get("轉強訊號"):
+            reasons.append("轉強訊號")
+        if row.get("高分鈍化"):
+            reasons.append("高分但升溫放緩")
+        return "、".join(reasons) if reasons else "分數達標"
+
+    candidate_df["候選理由"] = candidate_df.apply(candidate_reason, axis=1)
+    candidate_df = candidate_df[candidate_df["分數達標"]].copy()
     candidate_df = candidate_df.sort_values(
-        ["排序分數", "DeepTrend分數", "分數變化率"],
-        ascending=[False, False, False],
+        ["候選分數", "DeepTrend分數"],
+        ascending=[False, False],
     ).head(30)
 
     display_cols = [
         "股票代號",
         "股票名稱",
+        "候選分數",
+        "候選理由",
         "DeepTrend分數",
+        "分數變化",
         "分數變化率",
         "狀態",
         "綜合判斷",
@@ -3943,6 +4010,10 @@ def render_deeptrend_candidates(universe_df):
     display_cols = [col for col in display_cols if col in candidate_df.columns]
 
     display_df = candidate_df[display_cols].copy()
+    if "候選分數" in display_df.columns:
+        display_df["候選分數"] = display_df["候選分數"].map(lambda value: format_number(value, 1))
+    if "分數變化" in display_df.columns:
+        display_df["分數變化"] = display_df["分數變化"].map(lambda value: "" if pd.isna(value) else f"{value:+.2f}")
     if "分數變化率" in display_df.columns:
         display_df["分數變化率"] = display_df["分數變化率"].map(
             lambda value: "" if pd.isna(value) else f"{value:+.2f}%"
