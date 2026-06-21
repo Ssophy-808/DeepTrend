@@ -848,7 +848,7 @@ def load_stock_result():
 
 @st.cache_data(ttl=600)
 def load_universe_result():
-    """Load the independent 200-stock market-pool analysis file when available."""
+    """Load the independent market-pool analysis file when available."""
     try:
         return pd.read_excel(UNIVERSE_RESULT_FILE)
     except FileNotFoundError:
@@ -4038,12 +4038,13 @@ def render_market_pool_temperature(universe_df):
         return
 
     stats, snapshot_df, group_rank = build_fast_market_temperature_from_result(universe_df, save_group_history=True)
+    pool_size = len(universe_df)
 
     render_market_temperature(
         universe_df,
         title="🌡️ 市場池溫度",
         source_label="市場池",
-        scope_note="此分數代表目前 200 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
+        scope_note=f"此分數代表目前 {pool_size} 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
         precomputed_temperature=(stats, snapshot_df, group_rank),
     )
 
@@ -4051,7 +4052,7 @@ def render_market_pool_temperature(universe_df):
 def render_deeptrend_candidates(universe_df):
     """Show the top DeepTrend candidates from the neutral market pool only."""
     st.subheader("🔭 DeepTrend 候選股")
-    st.caption("從 200 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
+    st.caption(f"從 {len(universe_df)} 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
 
     if universe_df.empty:
         st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
