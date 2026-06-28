@@ -3,8 +3,8 @@ name: Keep Streamlit awake
 on:
   workflow_dispatch:
   schedule:
-    # Ping every 6 hours so Streamlit Community Cloud is less likely to stay asleep.
-    - cron: "0 */6 * * *"
+    # Ping hourly so Streamlit Community Cloud is less likely to stay asleep.
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -19,14 +19,23 @@ jobs:
         timeout-minutes: 8
         run: |
           APP_URL="https://deeptrend-zdvlvdt3nx73pvfbr7cp6i.streamlit.app/"
+          HEALTH_URL="${APP_URL}healthz"
 
           echo "Waking DeepTrend Streamlit app..."
-          STATUS_CODE=$(curl -L --silent --show-error \
+          HEALTH_STATUS=$(curl -L --silent --show-error \
             --retry 8 --retry-delay 20 --retry-all-errors --connect-timeout 30 --max-time 240 \
+            --output /tmp/deeptrend_health.json \
+            --write-out "%{http_code}" \
+            "${HEALTH_URL}" || true)
+
+          PAGE_STATUS=$(curl -L --silent --show-error \
+            --retry 3 --retry-delay 10 --retry-all-errors --connect-timeout 30 --max-time 120 \
             --output /tmp/deeptrend_keepalive.html \
             --write-out "%{http_code}" \
             "${APP_URL}" || true)
 
-          echo "DeepTrend keepalive HTTP status: ${STATUS_CODE}"
+          echo "DeepTrend health HTTP status: ${HEALTH_STATUS}"
+          test -s /tmp/deeptrend_health.json && cat /tmp/deeptrend_health.json || true
+          echo "DeepTrend page HTTP status: ${PAGE_STATUS}"
           test -s /tmp/deeptrend_keepalive.html && head -c 500 /tmp/deeptrend_keepalive.html || true
           echo "Keep-awake finished. Transient Streamlit wake-up errors are ignored by design."
