@@ -2056,7 +2056,7 @@ def summarize_factor_lead_history(factor_df):
 def render_factor_lead_analysis(stock_df):
     """Render factor-leading analysis based on the saved factor event database."""
     st.subheader("📢 因子領先分析")
-    st.caption("用歷史快照觀察：技術、籌碼、量價誰先轉弱，以及事件後股價是否真的下跌。")
+    st.caption("選擇單一股票，觀察技術、籌碼、量價誰先轉弱，以及事件後股價是否真的下跌。")
 
     factor_df = load_factor_lead_history()
     if factor_df.empty:
@@ -2072,7 +2072,37 @@ def render_factor_lead_analysis(stock_df):
         st.warning(f"因子領先資料缺少必要欄位：{', '.join(missing_columns)}")
         return
 
-    factor_options = ["全部"] + sorted(factor_df["lead_factor"].dropna().unique().tolist())
+    factor_df = factor_df.dropna(subset=["event_date", "stock_id"]).copy()
+    if factor_df.empty:
+        st.info("目前因子領先資料沒有可用的股票事件。")
+        return
+
+    stock_label_map = build_stock_label_map(stock_df) if not stock_df.empty else {}
+    event_stock_map = {
+        str(row["stock_id"]): f'{row["stock_id"]}｜{row.get("stock_name", "")}'
+        for _, row in factor_df.drop_duplicates(subset=["stock_id"]).iterrows()
+    }
+    for stock_id, label in event_stock_map.items():
+        stock_label_map.setdefault(stock_id, label)
+
+    stock_options = sorted(
+        factor_df["stock_id"].dropna().astype(str).unique().tolist(),
+        key=stock_code_key,
+    )
+    if not stock_options:
+        st.info("目前沒有可選擇的股票事件。")
+        return
+
+    selected_stock = st.selectbox(
+        "選擇股票",
+        stock_options,
+        format_func=lambda code: stock_label_map.get(code, code),
+    )
+
+    stock_events = factor_df[factor_df["stock_id"].astype(str).eq(str(selected_stock))].copy()
+    stock_name = stock_events["stock_name"].dropna().iloc[-1] if not stock_events["stock_name"].dropna().empty else ""
+
+    factor_options = ["全部"] + sorted(stock_events["lead_factor"].dropna().unique().tolist())
     col_factor, col_days, col_drop = st.columns([1.2, 1.2, 1.4])
     with col_factor:
         selected_factor = st.selectbox("領先因子", factor_options)
@@ -2081,7 +2111,7 @@ def render_factor_lead_analysis(stock_df):
     with col_drop:
         only_drop = st.checkbox("只看後續下跌警報命中", value=False)
 
-    filtered_events = factor_df.copy()
+    filtered_events = stock_events.copy()
     if selected_factor != "全部":
         filtered_events = filtered_events[filtered_events["lead_factor"].eq(selected_factor)]
     if min_lead_days != "不限" and "lead_days" in filtered_events.columns:
@@ -2092,18 +2122,21 @@ def render_factor_lead_analysis(stock_df):
 
     summary_df = summarize_factor_lead_history(filtered_events)
     if summary_df.empty:
-        st.info("目前篩選條件下沒有可統計的因子事件。")
+        st.info("這檔股票在目前篩選條件下沒有可統計的因子事件。")
         return
 
+    st.markdown(f"### {selected_stock} {stock_name} 的因子警報")
     total_events = len(filtered_events)
-    unique_stocks = filtered_events["stock_id"].nunique() if "stock_id" in filtered_events.columns else 0
     hit_rate = filtered_events["price_drop_after"].mean() * 100 if "price_drop_after" in filtered_events.columns else pd.NA
+    latest_event = filtered_events.sort_values("event_date", ascending=False).iloc[0]
+    latest_event_date = latest_event["event_date"].strftime("%Y-%m-%d") if hasattr(latest_event["event_date"], "strftime") else ""
+
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     metric_col1.metric("因子事件數", format_integer(total_events))
-    metric_col2.metric("獨立股票數", format_integer(unique_stocks))
+    metric_col2.metric("最近警報", latest_event_date)
     metric_col3.metric("下跌警報命中率", format_signed_pct(hit_rate).replace("+", "") if pd.notna(hit_rate) else "N/A")
 
-    st.markdown("### 因子統計")
+    st.markdown("#### 這檔股票的因子統計")
     display_summary = summary_df.copy()
     percent_columns = ["事件占比", "下跌警報命中率"]
     for days in [1, 3, 5, 10]:
@@ -2117,27 +2150,50 @@ def render_factor_lead_analysis(stock_df):
         )
     st.dataframe(display_summary, use_container_width=True, hide_index=True)
 
-    chart_df = summary_df.copy()
-    if not chart_df.empty and "下跌警報命中率" in chart_df.columns:
+    chart_df = filtered_events.sort_values("event_date").copy()
+    if not chart_df.empty:
         fig = go.Figure()
         fig.add_trace(
-            go.Bar(
-                x=chart_df["領先因子"],
-                y=chart_df["下跌警報命中率"],
-                name="下跌警報命中率",
+            go.Scatter(
+                x=chart_df["event_date"],
+                y=chart_df["factor_after"],
+                mode="lines+markers",
+                name="因子後值",
                 marker_color="#38bdf8",
             )
         )
+        if "deeptrend_after" in chart_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_df["event_date"],
+                    y=chart_df["deeptrend_after"],
+                    mode="lines+markers",
+                    name="DeepTrend",
+                    line=dict(color="#facc15", dash="dot"),
+                )
+            )
+        if "close_at_event" in chart_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_df["event_date"],
+                    y=chart_df["close_at_event"],
+                    mode="lines+markers",
+                    name="事件收盤價",
+                    yaxis="y2",
+                    line=dict(color="#fb7185", dash="dash"),
+                )
+            )
         fig.update_layout(
-            height=320,
-            yaxis_title="命中率（%）",
-            xaxis_title="領先因子",
-            showlegend=False,
+            height=360,
+            yaxis_title="分數",
+            yaxis2=dict(title="股價", overlaying="y", side="right", showgrid=False),
+            xaxis_title="事件日",
+            legend=dict(orientation="h"),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 最近因子警報")
-    recent_events = filtered_events.sort_values("event_date", ascending=False).head(200).copy()
+    st.markdown("#### 這檔股票的因子警報明細")
+    recent_events = filtered_events.sort_values("event_date", ascending=False).copy()
     display_columns = [
         "event_date",
         "stock_id",
