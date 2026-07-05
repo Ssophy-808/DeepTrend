@@ -376,6 +376,18 @@ def classify_score(score):
     return "❌避開", "觀望"
 
 
+def infer_asset_type(row, ticker):
+    value = str(row.get("asset_type", "")).strip().lower()
+    if value in {"etf", "stock"}:
+        return "ETF" if value == "etf" else "個股"
+
+    group = str(row.get("group", "")).strip().lower()
+    ticker_key = stock_code_key(ticker)
+    if group == "etf" or ticker_key.startswith("00"):
+        return "ETF"
+    return "個股"
+
+
 def analyze_stock_list(input_file, output_file, label, use_previous_scores=True):
     stock_list = pd.read_csv(input_file)
     chip_data = pd.read_csv(CHIP_FILE)
@@ -394,6 +406,7 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
         original_ticker = str(row["ticker"]).strip()
         stock_name = row["name"]
         ticker, history = get_official_history(original_ticker)
+        asset_type = infer_asset_type(row, ticker)
 
         print(f"正在分析 {stock_name} ({ticker})...")
 
@@ -493,6 +506,7 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
             {
                 "股票代號": ticker,
                 "股票名稱": stock_name,
+                "資產類型": asset_type,
                 "收盤價": round(close, 2),
                 "5日線": round(ma5, 2),
                 "10日線": round(ma10, 2),

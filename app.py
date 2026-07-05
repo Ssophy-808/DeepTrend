@@ -868,6 +868,12 @@ def prepare_stock_data(df):
         "20日高點",
         "20日低點",
         "技術分數",
+        "DeepTrend分數",
+        "技術面分數",
+        "籌碼分數",
+        "量價分數",
+        "分數變化",
+        "分數變化率",
         "成交量",
         "5日均量",
     ]
@@ -879,9 +885,67 @@ def prepare_stock_data(df):
     if "今日漲跌幅" not in df.columns:
         df["今日漲跌幅"] = pd.NA
 
+    df["資產類型"] = df.apply(infer_asset_type, axis=1)
+    df["Trend Score"] = df["DeepTrend分數"] if "DeepTrend分數" in df.columns else df["技術分數"]
+
     # 乖離率公式：目前收盤價相對 5 日線的距離，用於強勢排行和雷達排序。
     df["乖離率"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
+    df["ETF Value Score"] = calculate_etf_value_score(df)
+    df["ETF布局判讀"] = df.apply(classify_etf_value_score, axis=1)
     return add_signal_labels(df)
+
+
+def infer_asset_type(row):
+    """Classify ETF vs stock while staying compatible with older CSV/Excel outputs."""
+    for column in ["asset_type", "資產類型"]:
+        value = str(row.get(column, "")).strip().lower()
+        if value in {"etf", "stock"}:
+            return "ETF" if value == "etf" else "個股"
+        if value in {"ETF", "個股"}:
+            return value
+
+    group = str(row.get("group", row.get("族群", ""))).strip().lower()
+    ticker = str(row.get("股票代號", row.get("ticker", ""))).strip().split(".")[0]
+    if group == "etf" or ticker.startswith("00"):
+        return "ETF"
+    return "個股"
+
+
+def calculate_etf_value_score(df):
+    """Estimate ETF position heat; lower values mean closer to a staggered-buy observation zone."""
+    if df.empty:
+        return pd.Series(dtype="float64")
+
+    close = pd.to_numeric(df.get("收盤價"), errors="coerce")
+    low20 = pd.to_numeric(df.get("20日低點"), errors="coerce")
+    high20 = pd.to_numeric(df.get("20日高點"), errors="coerce")
+    ma20 = pd.to_numeric(df.get("20日線"), errors="coerce")
+    bias = pd.to_numeric(df.get("乖離率"), errors="coerce")
+
+    price_range = (high20 - low20).replace(0, pd.NA)
+    low_position = ((close - low20) / price_range * 100).clip(lower=0, upper=100)
+    ma20_heat = ((close - ma20) / ma20.replace(0, pd.NA) * 100 + 8) / 16 * 100
+    ma20_heat = ma20_heat.clip(lower=0, upper=100)
+    bias_heat = ((bias + 8) / 16 * 100).clip(lower=0, upper=100)
+
+    value_score = (low_position * 0.55 + ma20_heat * 0.25 + bias_heat * 0.20).round(1)
+    return value_score.where(df["資產類型"].eq("ETF"), pd.NA)
+
+
+def classify_etf_value_score(row):
+    """Translate ETF Value Score into a plain-language interpretation."""
+    if row.get("資產類型") != "ETF":
+        return ""
+    score = row.get("ETF Value Score", pd.NA)
+    if pd.isna(score):
+        return "資料不足"
+    if score < 25:
+        return "分批觀察區"
+    if score < 45:
+        return "可觀察"
+    if score < 70:
+        return "中性"
+    return "偏熱不追"
 
 
 def apply_realtime_prices(df):
@@ -1089,6 +1153,25 @@ def render_stock_radar(filtered_df):
         investment_5d = row.get("投信5日", pd.NA)
         foreign_color = value_color(foreign_5d)
         investment_color = value_color(investment_5d)
+        asset_type = row.get("資產類型", "個股")
+        trend_score = format_number(row.get("Trend Score"), 0)
+        etf_value_score = row.get("ETF Value Score", pd.NA)
+        etf_judgement = row.get("ETF布局判讀", "")
+        etf_block = ""
+        if asset_type == "ETF":
+            etf_block = f"""
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+                    <div>
+                        <div style="font-size:12px;color:#9ca3af;">Trend Score</div>
+                        <div style="font-size:18px;font-weight:800;color:#ffffff;">{trend_score}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:12px;color:#9ca3af;">ETF Value Score</div>
+                        <div style="font-size:18px;font-weight:800;color:#38bdf8;">{format_number(etf_value_score, 1)}</div>
+                    </div>
+                    <div style="grid-column:1 / -1;font-size:13px;color:#d1d5db;">ETF判讀：{etf_judgement}</div>
+                </div>
+            """
 
         html = dedent(
             f"""
@@ -1103,7 +1186,7 @@ def render_stock_radar(filtered_df):
                 <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
                     <div>
                         <div style="font-size:22px;font-weight:800;color:#ffffff;line-height:1.2;">{row["股票名稱"]}</div>
-                        <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {time_text}</div>
+                        <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {asset_type} · {time_text}</div>
                     </div>
                     <div style="font-size:18px;font-weight:800;color:#ffffff;white-space:nowrap;">{score}</div>
                 </div>
@@ -1130,6 +1213,7 @@ def render_stock_radar(filtered_df):
                         <div style="font-size:19px;font-weight:800;color:{bias_color};">{format_signed_pct(bias)}</div>
                     </div>
                 </div>
+                {etf_block}
                 <div style="
                     margin-top:16px;
                     padding-top:12px;
@@ -2669,6 +2753,10 @@ def render_scan_table(filtered_df):
         "狀態",
         "股票代號",
         "股票名稱",
+        "資產類型",
+        "Trend Score",
+        "ETF Value Score",
+        "ETF布局判讀",
         "均線型態",
         "突破警報",
         "收盤價",
@@ -2682,7 +2770,18 @@ def render_scan_table(filtered_df):
     ordered_columns += [col for col in display_df.columns if col not in ordered_columns]
     display_df = display_df[ordered_columns]
 
-    price_columns = ["收盤價", "今日漲跌幅", "5日線", "10日線", "20日線", "20日高點", "20日低點", "乖離率"]
+    price_columns = [
+        "收盤價",
+        "今日漲跌幅",
+        "5日線",
+        "10日線",
+        "20日線",
+        "20日高點",
+        "20日低點",
+        "乖離率",
+        "Trend Score",
+        "ETF Value Score",
+    ]
     chip_columns = [
         "籌碼1日",
         "籌碼3日",
@@ -2796,13 +2895,21 @@ def render_detail(filtered_df):
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("股票名稱", selected_row["股票名稱"])
-    col2.metric("技術分數", selected_row["技術分數"])
+    col2.metric("Trend Score", selected_row.get("Trend Score", selected_row["技術分數"]))
     col3.metric("狀態", selected_row["狀態"])
     col4.metric("綜合判斷", selected_row["綜合判斷"])
 
     signal_col1, signal_col2 = st.columns(2)
     signal_col1.metric("均線型態", selected_row.get("均線型態", "中性"))
     signal_col2.metric("突破警報", selected_row.get("突破警報", "無"))
+
+    if selected_row.get("資產類型") == "ETF":
+        st.markdown("### 💎 ETF 分批布局視角")
+        etf_col1, etf_col2, etf_col3 = st.columns(3)
+        etf_col1.metric("資產類型", "ETF")
+        etf_col2.metric("ETF Value Score", format_number(selected_row.get("ETF Value Score"), 1))
+        etf_col3.metric("布局判讀", selected_row.get("ETF布局判讀", "資料不足"))
+        st.caption("ETF Value Score 越低，代表越接近分批觀察區；Trend Score 則用來輔助判斷短線是否轉強。")
 
     st.markdown("### 📈 分數組成變化")
     score_change_df = build_score_component_change(selected_row)
@@ -4437,8 +4544,9 @@ def render_market_pool_temperature(universe_df):
         universe_df,
         title="⭐ 潛力股",
         limit=10,
-        caption=f"從 {pool_size} 檔市場池中挑出前 10 檔新鮮轉強候選，重視分數升溫、突破、量能與轉強訊號。",
+        caption=f"從 {pool_size} 檔市場池中挑出前 10 檔個股新鮮轉強候選，重視分數升溫、突破、量能與轉強訊號。",
     )
+    render_etf_value_watch(universe_df)
 
 
 def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", limit=30, caption=None):
@@ -4531,6 +4639,8 @@ def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", l
         return "、".join(reasons) if reasons else "分數達標"
 
     candidate_df["候選理由"] = candidate_df.apply(candidate_reason, axis=1)
+    if "資產類型" in candidate_df.columns:
+        candidate_df = candidate_df[candidate_df["資產類型"].ne("ETF")].copy()
     candidate_df = candidate_df[candidate_df["分數達標"]].copy()
     candidate_df = candidate_df.sort_values(
         ["候選分數", "DeepTrend分數"],
@@ -4540,6 +4650,7 @@ def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", l
     display_cols = [
         "股票代號",
         "股票名稱",
+        "資產類型",
         "候選分數",
         "候選理由",
         "DeepTrend分數",
@@ -4561,6 +4672,37 @@ def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", l
         display_df["分數變化率"] = display_df["分數變化率"].map(
             lambda value: "" if pd.isna(value) else f"{value:+.2f}%"
         )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
+def render_etf_value_watch(universe_df):
+    """Show ETF-specific value-position view so ETFs are not judged only by trend strength."""
+    if universe_df.empty or "資產類型" not in universe_df.columns:
+        return
+
+    etf_df = universe_df[universe_df["資產類型"].eq("ETF")].copy()
+    if etf_df.empty:
+        return
+
+    st.markdown("### 💎 ETF 分批觀察")
+    st.caption("ETF Value Score 越低，代表越接近分批觀察區；Trend Score 只輔助判斷短線是否轉強。")
+    etf_df["ETF Value Score"] = pd.to_numeric(etf_df.get("ETF Value Score"), errors="coerce")
+    etf_df = etf_df.sort_values(["ETF Value Score", "Trend Score"], ascending=[True, False], na_position="last")
+    display_cols = [
+        "股票代號",
+        "股票名稱",
+        "ETF Value Score",
+        "ETF布局判讀",
+        "Trend Score",
+        "今日漲跌幅",
+        "乖離率",
+        "收盤價",
+    ]
+    display_cols = [col for col in display_cols if col in etf_df.columns]
+    display_df = etf_df[display_cols].copy()
+    for col in ["ETF Value Score", "Trend Score", "今日漲跌幅", "乖離率", "收盤價"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
