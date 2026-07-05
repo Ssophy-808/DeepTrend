@@ -4430,11 +4430,22 @@ def render_market_pool_temperature(universe_df):
         precomputed_temperature=(stats, snapshot_df, group_rank),
     )
 
+    st.markdown("---")
+    render_deeptrend_candidates(
+        universe_df,
+        title="⭐ 潛力股",
+        limit=10,
+        caption=f"從 {pool_size} 檔市場池中挑出前 10 檔新鮮轉強候選，重視分數升溫、突破、量能與轉強訊號。",
+    )
 
-def render_deeptrend_candidates(universe_df):
+
+def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", limit=30, caption=None):
     """Show the top DeepTrend candidates from the neutral market pool only."""
-    st.subheader("🔭 DeepTrend 候選股")
-    st.caption(f"從 {len(universe_df)} 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。")
+    st.subheader(title)
+    st.caption(
+        caption
+        or f"從 {len(universe_df)} 檔市場池中找出新鮮轉強候選：重視分數上升、突破、量能與轉強訊號，不只是照 DeepTrend 分數排序。"
+    )
 
     if universe_df.empty:
         st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
@@ -4522,7 +4533,7 @@ def render_deeptrend_candidates(universe_df):
     candidate_df = candidate_df.sort_values(
         ["候選分數", "DeepTrend分數"],
         ascending=[False, False],
-    ).head(30)
+    ).head(limit)
 
     display_cols = [
         "股票代號",
@@ -4715,7 +4726,6 @@ view_options = [
     "🔎 個股查詢",
     "🌡️ 觀察池溫度",
     "🌡️ 市場池溫度",
-    "🔭 DeepTrend 候選股",
     "🧾 籌碼查帳（個股）",
     "📋 詳細表格",
     "🩺 資料健康檢查",
@@ -4753,7 +4763,3 @@ elif active_view == "🌡️ 市場池溫度":
     universe_raw_df = load_universe_result()
     universe_df = apply_realtime_prices(prepare_stock_data(universe_raw_df)) if not universe_raw_df.empty else universe_raw_df
     render_market_pool_temperature(universe_df)
-else:
-    universe_raw_df = load_universe_result()
-    universe_df = apply_realtime_prices(prepare_stock_data(universe_raw_df)) if not universe_raw_df.empty else universe_raw_df
-    render_deeptrend_candidates(universe_df)
