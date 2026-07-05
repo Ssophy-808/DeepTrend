@@ -13,3 +13,13 @@
   - `app.py` 新增防呆：只有 `main.py` 成功時才執行 `update_history.py`。
   - `update_history.py` 新增防呆：若新快照與上一個交易日快照相同，略過不重複寫入。
 - 結果：之後遇到國定假日、週末、颱風休市或官方資料尚未完整發布時，DeepTrend 會保留上一個完整交易日資料，避免歷史資料庫被污染。
+
+DeepTrend 維護流程
+
+1. 修改程式
+2. Push 到 GitHub
+3. Actions → Update stock data → Run workflow
+4. 等約 33 分鐘
+5. 確認 Success
+6. 等 Streamlit 自動重新部署
+7. 檢查網站是否正常
