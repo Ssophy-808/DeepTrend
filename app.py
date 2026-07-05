@@ -2521,6 +2521,13 @@ def render_score_validation(stock_df):
         st.info("目前區間資料還不足，暫不繪製平均報酬圖。")
     else:
         fig = go.Figure()
+        horizon_colors = {
+            1: "#38bdf8",
+            3: "#22c55e",
+            5: "#f59e0b",
+            10: "#6366f1",
+            20: "#f97316",
+        }
         for horizon in chart_horizons:
             horizon_label = f"{horizon}日平均報酬"
             horizon_df = chart_source[chart_source["觀察天數"].eq(horizon_label)]
@@ -2531,6 +2538,7 @@ def render_score_validation(stock_df):
                     x=horizon_df["區間"],
                     y=horizon_df["平均報酬率"],
                     name=f"{horizon}日後",
+                    marker_color=horizon_colors.get(horizon, "#94a3b8"),
                 )
             )
         fig.update_layout(
