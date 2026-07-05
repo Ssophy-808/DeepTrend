@@ -584,7 +584,7 @@ def describe_volume_price_component(today_row, previous_row=None):
 
 
 def build_score_component_change(selected_row):
-    """Build a yesterday/today comparison table for DeepTrend score components."""
+    """Build a previous-trading-snapshot/latest comparison table for score components."""
     score_columns = [
         ("技術面", "技術面分數", describe_technical_component),
         ("籌碼面", "籌碼分數", describe_chip_component),
@@ -600,9 +600,28 @@ def build_score_component_change(selected_row):
     previous_row = None
     if not history_df.empty:
         stock_history = history_df[history_df["股票代號_key"] == today_key].sort_values("snapshot_date")
-        stock_history = stock_history[stock_history["snapshot_date"] < pd.Timestamp(date.today())]
+        stock_history = stock_history[stock_history["snapshot_date"] <= pd.Timestamp(date.today())]
         if not stock_history.empty:
-            previous_row = stock_history.iloc[-1]
+            compare_columns = ["收盤價"] + [column for _, column, _ in score_columns]
+            current_values = {column: row_number(selected_row, column) for column in compare_columns}
+
+            for _, candidate_row in stock_history.iloc[::-1].iterrows():
+                is_same_snapshot = True
+                for column in compare_columns:
+                    current_value = current_values[column]
+                    candidate_value = row_number(candidate_row, column)
+                    if pd.isna(current_value) and pd.isna(candidate_value):
+                        continue
+                    if pd.isna(current_value) != pd.isna(candidate_value):
+                        is_same_snapshot = False
+                        break
+                    if abs(float(current_value) - float(candidate_value)) > 0.0001:
+                        is_same_snapshot = False
+                        break
+
+                if not is_same_snapshot:
+                    previous_row = candidate_row
+                    break
 
     rows = []
     for label, column, describer in score_columns:
@@ -611,8 +630,8 @@ def build_score_component_change(selected_row):
         rows.append(
             {
                 "項目": label,
-                "昨天": "" if pd.isna(previous_value) else format_number(previous_value, 2),
-                "今天": "" if pd.isna(today_value) else format_number(today_value, 2),
+                "上一交易日": "" if pd.isna(previous_value) else format_number(previous_value, 2),
+                "最新": "" if pd.isna(today_value) else format_number(today_value, 2),
                 "變化": score_change_label(previous_value, today_value),
                 "說明": describer(selected_row, previous_row),
             }
@@ -2914,8 +2933,8 @@ def render_detail(filtered_df):
     st.markdown("### 📈 分數組成變化")
     score_change_df = build_score_component_change(selected_row)
     st.dataframe(score_change_df, use_container_width=True, hide_index=True)
-    if score_change_df["昨天"].eq("").all():
-        st.caption("目前尚無前一個新版 DeepTrend 快照可比較，累積一天後會顯示昨天分數。")
+    if score_change_df["上一交易日"].eq("").all():
+        st.caption("目前尚無可比較的上一個交易日快照，累積資料後會自動顯示。")
 
     st.markdown("### 📌 技術面")
     st.info(selected_row["技術面"])
