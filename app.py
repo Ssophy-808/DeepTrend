@@ -843,7 +843,7 @@ def load_stock_result():
     try:
         return pd.read_excel(RESULT_FILE)
     except FileNotFoundError:
-        st.error(f"找不到分析結果檔案：{RESULT_FILE}")
+        st.error("找不到分析結果，請先執行更新流程。")
         st.stop()
 
 
@@ -1211,11 +1211,11 @@ def chip_sum(df, column):
 def render_chip_audit(stock_df):
     """Render an audit page for daily institutional chip data and interval reconciliation."""
     st.subheader("🧾 籌碼查帳（個股）")
-    st.caption("資料來源：output/chip_daily.csv。可用來對照證交所/櫃買中心的週報、月報區間加總。")
+    st.caption("可用來對照證交所/櫃買中心的週報、月報區間加總。")
 
     chip_df = load_chip_daily_data()
     if chip_df.empty:
-        st.warning("目前找不到每日籌碼明細。請先執行 update_chip.py 產生 output/chip_daily.csv。")
+        st.warning("目前找不到每日籌碼明細，請先執行更新流程。")
         return
 
     stock_options = []
@@ -1614,7 +1614,7 @@ def build_score_history_figure(selected_df, height=360):
 def render_score_history(stock_df):
     """Render DeepTrend and component score history for one stock."""
     st.subheader("📈 分數歷史")
-    st.caption("資料來源：output/stock_analysis_history.csv。用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
+    st.caption("用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
     st.caption("階段小標：避開（<20） → 轉弱（20-39） → 整理（40-59） → 轉強（60-79） → 強勢（80+）")
     st.info(
         "買賣訊號標準："
@@ -1625,7 +1625,7 @@ def render_score_history(stock_df):
 
     history_df = load_score_history_data()
     if history_df.empty:
-        st.warning("目前沒有可讀取的分數歷史資料。請先確認 output/stock_analysis_history.csv 是否存在且欄位完整。")
+        st.warning("目前沒有可讀取的分數歷史資料，請先確認每日更新是否完成。")
         return
 
     stock_options = []
@@ -2257,8 +2257,7 @@ def render_factor_lead_analysis(stock_df):
     factor_df = load_factor_lead_history()
     if factor_df.empty:
         st.warning(
-            "目前還沒有因子領先資料。請先執行 update_factor_lead_history.py，"
-            "或等待每日更新流程產生 output/factor_lead_history.csv。"
+            "目前還沒有因子領先資料，請先執行或等待每日更新流程。"
         )
         return
 
@@ -2590,17 +2589,17 @@ def render_data_health(stock_df):
 
     rows = [
         {
-            "檢查項目": "stock_analysis_result.xlsx 是否今天更新",
+            "檢查項目": "分析結果是否今天更新",
             "目前狀態": "✅ 今天已更新" if result_modified_date == today_text else "⚠️ 不是今天",
-            "最新日期/時間": result_modified or "找不到檔案",
+            "最新日期/時間": result_modified or "找不到資料",
         },
         {
-            "檢查項目": "chip_daily.csv 是否有今天資料",
+            "檢查項目": "籌碼明細是否有今天資料",
             "目前狀態": "✅ 今天有資料" if chip_latest_date == today_text else "⚠️ 尚未看到今天",
             "最新日期/時間": chip_latest_date or "找不到日期",
         },
         {
-            "檢查項目": "stock_analysis_history.csv 是否有今天快照",
+            "檢查項目": "分數歷史是否有今天快照",
             "目前狀態": "✅ 今天有快照" if history_latest_date == today_text else "⚠️ 尚未看到今天",
             "最新日期/時間": history_latest_date or "找不到日期",
         },
@@ -2609,7 +2608,7 @@ def render_data_health(stock_df):
 
     watchlist_file = BASE_DIR / "watchlist.csv"
     if not watchlist_file.exists():
-        st.warning("找不到 watchlist.csv，無法比對缺漏股票。")
+        st.warning("找不到觀察清單，無法比對缺漏股票。")
         return
     if stock_df.empty or "股票代號" not in stock_df.columns:
         st.warning("目前股票分析結果為空，無法比對缺漏股票。")
@@ -2618,11 +2617,11 @@ def render_data_health(stock_df):
     try:
         watchlist_df = pd.read_csv(watchlist_file)
     except Exception as exc:
-        st.warning(f"watchlist.csv 讀取失敗：{exc}")
+        st.warning(f"觀察清單讀取失敗：{exc}")
         return
 
     if "ticker" not in watchlist_df.columns:
-        st.warning("watchlist.csv 缺少 ticker 欄位，無法比對缺漏股票。")
+        st.warning("觀察清單欄位不完整，無法比對缺漏股票。")
         return
 
     expected_codes = watchlist_df["ticker"].astype(str).map(stock_code_key)
@@ -2632,10 +2631,10 @@ def render_data_health(stock_df):
 
     st.markdown("### 抓不到資料股票")
     if missing_df.empty:
-        st.success("目前 watchlist 內股票都有出現在 stock_analysis_result.xlsx。")
+        st.success("目前觀察清單內股票都有出現在分析結果。")
     else:
         display_cols = [col for col in ["ticker", "name", "group"] if col in missing_df.columns]
-        st.warning(f"目前有 {len(missing_df)} 檔 watchlist 股票沒有出現在分析結果。")
+        st.warning(f"目前有 {len(missing_df)} 檔觀察清單股票沒有出現在分析結果。")
         st.dataframe(missing_df[display_cols] if display_cols else missing_df, use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -2760,9 +2759,9 @@ def debug_kline_data(k_df):
     debug_path = BASE_DIR / "debug_kline.csv"
     debug_csv = debug_df.tail(30).to_csv(index=False, encoding="utf-8-sig")
     debug_path.write_text(debug_csv, encoding="utf-8-sig")
-    st.caption(f"K線 debug 檔已產生：{debug_path}")
+    st.caption("K線檢查資料已產生。")
     st.download_button(
-        "下載 debug_kline.csv",
+        "下載 K 線檢查資料",
         data=debug_csv.encode("utf-8-sig"),
         file_name="debug_kline.csv",
         mime="text/csv",
@@ -4080,27 +4079,27 @@ def render_backtest_record_history():
         return
 
     recent_files = record_files[:10]
+    record_labels = {
+        f"第 {idx} 筆紀錄 - {datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')}": path
+        for idx, path in enumerate(recent_files, 1)
+    }
     st.dataframe(
         pd.DataFrame(
             {
-                "檔案名稱": [path.name for path in recent_files],
-                "修改時間": [
-                    datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                    for path in recent_files
-                ],
+                "紀錄": list(record_labels.keys()),
             }
         ),
         use_container_width=True,
         hide_index=True,
     )
 
-    selected_name = st.selectbox("讀取歷史紀錄", [path.name for path in recent_files])
-    selected_path = next(path for path in recent_files if path.name == selected_name)
+    selected_name = st.selectbox("讀取歷史紀錄", list(record_labels.keys()))
+    selected_path = record_labels[selected_name]
 
     try:
         selected_df = pd.read_csv(selected_path)
     except Exception as exc:
-        st.error(f"CSV 讀取失敗：{exc}")
+        st.error(f"紀錄讀取失敗：{exc}")
         return
 
     render_backtest_metric_grid(summarize_backtest_record(selected_df))
@@ -4216,9 +4215,9 @@ def render_backtest_lab(df):
         try:
             record_path, csv_text = save_backtest_record(result_df, settings, strategy_name)
             if record_path and csv_text:
-                st.success(f"本次回測紀錄已儲存：{record_path}")
+                st.success("本次回測紀錄已儲存。")
                 st.download_button(
-                    "下載本次 CSV",
+                    "下載本次紀錄",
                     data=csv_text.encode("utf-8-sig"),
                     file_name=Path(record_path).name,
                     mime="text/csv",
@@ -4419,7 +4418,7 @@ def render_market_pool_temperature(universe_df):
     """Render the neutral 200-stock market-pool temperature without changing the core radar."""
     if universe_df.empty:
         st.subheader("🌡️ 市場池溫度")
-        st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
+        st.info("尚未產生市場池分析結果，請先執行更新流程。")
         return
 
     stats, snapshot_df, group_rank = build_fast_market_temperature_from_result(universe_df, save_group_history=True)
@@ -4451,7 +4450,7 @@ def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", l
     )
 
     if universe_df.empty:
-        st.info("尚未產生 output/universe_analysis_result.xlsx。請先執行更新流程產生市場池分析。")
+        st.info("尚未產生市場池分析結果，請先執行更新流程。")
         return
 
     candidate_df = universe_df.copy()
