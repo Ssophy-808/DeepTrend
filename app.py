@@ -1509,6 +1509,108 @@ def score_point_rows(row):
     return pd.DataFrame(rows)
 
 
+def prepare_single_stock_score_history(history_df, stock_code):
+    """Return cleaned score history rows for one stock code."""
+    if history_df.empty:
+        return pd.DataFrame()
+
+    code = str(stock_code).split(".")[0]
+    selected_df = history_df[history_df["stock_code"].astype(str).eq(code)].copy()
+    if selected_df.empty:
+        return pd.DataFrame()
+
+    selected_df = selected_df.drop_duplicates(subset=["snapshot_date", "股票代號"], keep="last")
+    selected_df = selected_df.sort_values("snapshot_date")
+    previous_rows = selected_df.shift(1)
+    if "DeepTrend分數" in selected_df.columns:
+        selected_df["狀態程度"] = selected_df["DeepTrend分數"].map(deeptrend_status_level)
+    else:
+        selected_df["狀態程度"] = "資料不足"
+    selected_df["買賣訊號"] = [
+        score_signal_label(row, previous_rows.iloc[index] if index > 0 else None)
+        for index, (_, row) in enumerate(selected_df.iterrows())
+    ]
+    return selected_df
+
+
+def build_score_history_figure(selected_df, height=360):
+    """Build the shared score-history figure used by score history and stock-detail views."""
+    if selected_df.empty:
+        return None
+
+    score_columns = [col for col in ["DeepTrend分數", "技術面分數", "籌碼分數", "量價分數"] if col in selected_df.columns]
+    available_score_columns = [col for col in score_columns if selected_df[col].notna().any()]
+    if not available_score_columns:
+        return None
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    color_map = {
+        "DeepTrend分數": "#ef4444",
+        "技術面分數": "#38bdf8",
+        "籌碼分數": "#22c55e",
+        "量價分數": "#facc15",
+    }
+    for col in available_score_columns:
+        fig.add_trace(
+            go.Scatter(
+                x=selected_df["snapshot_date"],
+                y=selected_df[col],
+                mode="lines+markers",
+                name=col,
+                line=dict(color=color_map.get(col)),
+            ),
+            secondary_y=False,
+        )
+
+    if "收盤價" in selected_df.columns and selected_df["收盤價"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=selected_df["snapshot_date"],
+                y=selected_df["收盤價"],
+                mode="lines",
+                name="股價",
+                line=dict(color="#a3a3a3", dash="dash"),
+            ),
+            secondary_y=True,
+        )
+
+    if "DeepTrend分數" in selected_df.columns:
+        buy_df = selected_df[selected_df["買賣訊號"].eq("▲ 轉強訊號")]
+        sell_df = selected_df[selected_df["買賣訊號"].eq("▼ 風險訊號")]
+        if not buy_df.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=buy_df["snapshot_date"],
+                    y=buy_df["DeepTrend分數"],
+                    mode="markers",
+                    name="轉強訊號",
+                    marker=dict(color="#22c55e", symbol="triangle-up", size=13),
+                ),
+                secondary_y=False,
+            )
+        if not sell_df.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=sell_df["snapshot_date"],
+                    y=sell_df["DeepTrend分數"],
+                    mode="markers",
+                    name="風險訊號",
+                    marker=dict(color="#ef4444", symbol="triangle-down", size=13),
+                ),
+                secondary_y=False,
+            )
+
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis_title="日期",
+    )
+    fig.update_yaxes(title_text="分數", secondary_y=False)
+    fig.update_yaxes(title_text="股價", secondary_y=True, showgrid=False)
+    return fig
+
+
 def render_score_history(stock_df):
     """Render DeepTrend and component score history for one stock."""
     st.subheader("📈 分數歷史")
@@ -1602,69 +1704,7 @@ def render_score_history(stock_df):
     if not available_score_columns:
         st.info("這檔股票目前還沒有 DeepTrend 分數組成歷史，之後每日更新會逐步累積。")
     else:
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        color_map = {
-            "DeepTrend分數": "#ef4444",
-            "技術面分數": "#38bdf8",
-            "籌碼分數": "#22c55e",
-            "量價分數": "#facc15",
-        }
-        for col in available_score_columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=selected_df["snapshot_date"],
-                    y=selected_df[col],
-                    mode="lines+markers",
-                    name=col,
-                    line=dict(color=color_map.get(col)),
-                ),
-                secondary_y=False,
-            )
-        if "收盤價" in selected_df.columns and selected_df["收盤價"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=selected_df["snapshot_date"],
-                    y=selected_df["收盤價"],
-                    mode="lines",
-                    name="股價",
-                    line=dict(color="#a3a3a3", dash="dash"),
-                ),
-                secondary_y=True,
-            )
-
-        if "DeepTrend分數" in selected_df.columns:
-            buy_df = selected_df[selected_df["買賣訊號"].eq("▲ 轉強訊號")]
-            sell_df = selected_df[selected_df["買賣訊號"].eq("▼ 風險訊號")]
-            if not buy_df.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=buy_df["snapshot_date"],
-                        y=buy_df["DeepTrend分數"],
-                        mode="markers",
-                        name="轉強訊號",
-                        marker=dict(color="#22c55e", symbol="triangle-up", size=13),
-                    ),
-                    secondary_y=False,
-                )
-            if not sell_df.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=sell_df["snapshot_date"],
-                        y=sell_df["DeepTrend分數"],
-                        mode="markers",
-                        name="風險訊號",
-                        marker=dict(color="#ef4444", symbol="triangle-down", size=13),
-                    ),
-                    secondary_y=False,
-                )
-        fig.update_layout(
-            height=460,
-            margin=dict(l=10, r=10, t=30, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            xaxis_title="日期",
-        )
-        fig.update_yaxes(title_text="分數", secondary_y=False)
-        fig.update_yaxes(title_text="股價", secondary_y=True, showgrid=False)
+        fig = build_score_history_figure(selected_df, height=460)
         st.plotly_chart(fig, use_container_width=True)
 
     detail_columns = [
@@ -2905,6 +2945,27 @@ def render_detail(filtered_df):
 
     debug_kline_data(k_df)
     render_k_chart(k_df, chart_mode=chart_mode)
+
+    st.markdown("### 📈 分數歷史")
+    score_history_df = load_score_history_data()
+    selected_score_history = prepare_single_stock_score_history(score_history_df, selected_stock)
+    if selected_score_history.empty:
+        st.info("這檔股票目前還沒有可顯示的分數歷史。")
+    else:
+        chart_history = selected_score_history.tail(60)
+        score_fig = build_score_history_figure(chart_history, height=380)
+        if score_fig is None:
+            st.info("這檔股票目前還沒有 DeepTrend 分數組成歷史。")
+        else:
+            latest_score = selected_score_history.iloc[-1].get("DeepTrend分數", pd.NA)
+            latest_status = selected_score_history.iloc[-1].get("狀態程度", "資料不足")
+            latest_signal = selected_score_history.iloc[-1].get("買賣訊號", "") or "無明確轉強/風險訊號"
+            st.caption(
+                f"最近 {chart_history['snapshot_date'].nunique()} 筆快照｜"
+                f"最新 DeepTrend：{format_number(latest_score, 1)}｜"
+                f"階段：{latest_status}｜{latest_signal}"
+            )
+            st.plotly_chart(score_fig, use_container_width=True)
 
 
 def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
