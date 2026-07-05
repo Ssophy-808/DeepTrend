@@ -4487,7 +4487,7 @@ def render_market_temperature(
             sync_cols[0].metric("相關係數", "N/A" if pd.isna(corr) else f"{corr:.2f}")
             sync_cols[1].metric("同步程度", sync_level(corr))
             sync_cols[2].metric("市場池攻擊溫度", f"{market_stats['攻擊溫度分數']:.1f} / 100")
-            st.caption("此處先比較觀察池與市場池的目前溫度因子比例；之後累積每日溫度歷史後，可升級成跨日相關係數。")
+            st.caption("同步性越高，代表核心觀察池和市場池目前狀態越接近。")
 
     st.markdown("### 強勢族群排行")
     if group_rank.empty:
@@ -4542,7 +4542,7 @@ def render_market_temperature(
 
 
 def render_market_pool_temperature(universe_df):
-    """Render the neutral 200-stock market-pool temperature without changing the core radar."""
+    """Render the neutral market-pool temperature without changing the core radar."""
     if universe_df.empty:
         st.subheader("🌡️ 市場池溫度")
         st.info("尚未產生市場池分析結果，請先執行更新流程。")
