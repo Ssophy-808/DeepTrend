@@ -2053,6 +2053,106 @@ def summarize_factor_lead_history(factor_df):
     return pd.DataFrame(rows).sort_values(["下跌警報命中率", "事件數"], ascending=[False, False])
 
 
+def factor_event_return_text(event):
+    """Build a compact forward-return sentence for one factor warning event."""
+    parts = []
+    for days in [1, 3, 5, 10]:
+        value = pd.to_numeric(event.get(f"return_{days}d"), errors="coerce")
+        if pd.notna(value):
+            parts.append(f"{days}日 {format_signed_pct(value)}")
+    return " / ".join(parts) if parts else "後續資料累積中"
+
+
+def factor_event_interpretation(event, factor_summary):
+    """Translate one factor event and its historical hit rate into a user-facing reading."""
+    factor = event.get("lead_factor", "因子")
+    change = pd.to_numeric(event.get("factor_change"), errors="coerce")
+    hit_rate = pd.to_numeric(factor_summary.get("下跌警報命中率"), errors="coerce")
+    return_3d = pd.to_numeric(event.get("return_3d"), errors="coerce")
+    return_5d = pd.to_numeric(event.get("return_5d"), errors="coerce")
+
+    if pd.notna(return_3d) and return_3d < 0:
+        result_text = f"事件後 3 日股價下跌 {abs(return_3d):.2f}%"
+    elif pd.notna(return_5d) and return_5d < 0:
+        result_text = f"事件後 5 日股價下跌 {abs(return_5d):.2f}%"
+    elif pd.notna(return_3d) or pd.notna(return_5d):
+        result_text = "事件後目前沒有明顯下跌"
+    else:
+        result_text = "後續股價資料仍在累積"
+
+    if pd.notna(hit_rate) and hit_rate >= 60:
+        reliability_text = "這個因子在此股票過去警示效果偏強"
+    elif pd.notna(hit_rate) and hit_rate >= 40:
+        reliability_text = "這個因子在此股票過去有一定參考性"
+    elif pd.notna(hit_rate):
+        reliability_text = "這個因子的歷史命中率偏低，需搭配其他訊號"
+    else:
+        reliability_text = "樣本仍不足，先以觀察為主"
+
+    if pd.notna(change) and change <= -50:
+        severity_text = "轉弱幅度很大"
+    elif pd.notna(change) and change <= -30:
+        severity_text = "轉弱幅度明顯"
+    else:
+        severity_text = "出現轉弱跡象"
+
+    return f"{factor}{severity_text}，{result_text}；{reliability_text}。"
+
+
+def format_factor_event_detail(events_df):
+    """Format factor event rows for the detailed inspection table."""
+    if events_df.empty:
+        return events_df
+
+    recent_events = events_df.sort_values("event_date", ascending=False).copy()
+    display_columns = [
+        "event_date",
+        "stock_id",
+        "stock_name",
+        "lead_factor",
+        "factor_before",
+        "factor_after",
+        "factor_change",
+        "close_at_event",
+        "return_1d",
+        "return_3d",
+        "return_5d",
+        "return_10d",
+        "lead_days",
+    ]
+    display_columns = [column for column in display_columns if column in recent_events.columns]
+    recent_events = recent_events[display_columns]
+    rename_map = {
+        "event_date": "事件日",
+        "stock_id": "股票代號",
+        "stock_name": "股票名稱",
+        "lead_factor": "領先因子",
+        "factor_before": "因子前值",
+        "factor_after": "因子後值",
+        "factor_change": "因子變化",
+        "close_at_event": "事件收盤價",
+        "return_1d": "1日後報酬",
+        "return_3d": "3日後報酬",
+        "return_5d": "5日後報酬",
+        "return_10d": "10日後報酬",
+        "lead_days": "領先天數",
+    }
+    recent_events = recent_events.rename(columns=rename_map)
+    if "事件日" in recent_events.columns:
+        recent_events["事件日"] = pd.to_datetime(recent_events["事件日"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for column in ["因子前值", "因子後值", "因子變化", "事件收盤價"]:
+        if column in recent_events.columns:
+            recent_events[column] = recent_events[column].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
+    for column in ["1日後報酬", "3日後報酬", "5日後報酬", "10日後報酬"]:
+        if column in recent_events.columns:
+            recent_events[column] = recent_events[column].map(format_signed_pct)
+    if "領先天數" in recent_events.columns:
+        recent_events["領先天數"] = recent_events["領先天數"].map(
+            lambda value: "未命中" if pd.isna(value) else f"{int(value)}天"
+        )
+    return recent_events
+
+
 def render_factor_lead_analysis(stock_df):
     """Render factor-leading analysis based on the saved factor event database."""
     st.subheader("📢 因子領先分析")
@@ -2130,13 +2230,29 @@ def render_factor_lead_analysis(stock_df):
     hit_rate = filtered_events["price_drop_after"].mean() * 100 if "price_drop_after" in filtered_events.columns else pd.NA
     latest_event = filtered_events.sort_values("event_date", ascending=False).iloc[0]
     latest_event_date = latest_event["event_date"].strftime("%Y-%m-%d") if hasattr(latest_event["event_date"], "strftime") else ""
+    latest_factor = latest_event.get("lead_factor", "")
+    latest_factor_summary = summary_df[summary_df["領先因子"].eq(latest_factor)]
+    latest_factor_summary = latest_factor_summary.iloc[0] if not latest_factor_summary.empty else pd.Series(dtype=object)
+    latest_interpretation = factor_event_interpretation(latest_event, latest_factor_summary)
+
+    with st.container(border=True):
+        st.markdown("#### 最近警報")
+        warn_col1, warn_col2, warn_col3, warn_col4 = st.columns([1.2, 1.1, 1.3, 1.4])
+        warn_col1.metric("領先因子", latest_factor or "N/A")
+        warn_col2.metric("事件日", latest_event_date or "N/A")
+        warn_col3.metric(
+            "因子變化",
+            f'{format_number(latest_event.get("factor_before"), 0)} → {format_number(latest_event.get("factor_after"), 0)}',
+        )
+        warn_col4.metric("事件後表現", factor_event_return_text(latest_event))
+        st.info(latest_interpretation)
 
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     metric_col1.metric("因子事件數", format_integer(total_events))
     metric_col2.metric("最近警報", latest_event_date)
     metric_col3.metric("下跌警報命中率", format_signed_pct(hit_rate).replace("+", "") if pd.notna(hit_rate) else "N/A")
 
-    st.markdown("#### 這檔股票的因子統計")
+    st.markdown("#### 歷史準確度")
     display_summary = summary_df.copy()
     percent_columns = ["事件占比", "下跌警報命中率"]
     for days in [1, 3, 5, 10]:
@@ -2192,55 +2308,20 @@ def render_factor_lead_analysis(stock_df):
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### 這檔股票的因子警報明細")
-    recent_events = filtered_events.sort_values("event_date", ascending=False).copy()
-    display_columns = [
-        "event_date",
-        "stock_id",
-        "stock_name",
-        "lead_factor",
-        "factor_before",
-        "factor_after",
-        "factor_change",
-        "close_at_event",
-        "return_1d",
-        "return_3d",
-        "return_5d",
-        "return_10d",
-        "lead_days",
-    ]
-    display_columns = [column for column in display_columns if column in recent_events.columns]
-    recent_events = recent_events[display_columns]
-    rename_map = {
-        "event_date": "事件日",
-        "stock_id": "股票代號",
-        "stock_name": "股票名稱",
-        "lead_factor": "領先因子",
-        "factor_before": "因子前值",
-        "factor_after": "因子後值",
-        "factor_change": "因子變化",
-        "close_at_event": "事件收盤價",
-        "return_1d": "1日後報酬",
-        "return_3d": "3日後報酬",
-        "return_5d": "5日後報酬",
-        "return_10d": "10日後報酬",
-        "lead_days": "領先天數",
-    }
-    recent_events = recent_events.rename(columns=rename_map)
-    if "事件日" in recent_events.columns:
-        recent_events["事件日"] = pd.to_datetime(recent_events["事件日"], errors="coerce").dt.strftime("%Y-%m-%d")
-    for column in ["因子前值", "因子後值", "因子變化", "事件收盤價"]:
-        if column in recent_events.columns:
-            recent_events[column] = recent_events[column].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
-    for column in ["1日後報酬", "3日後報酬", "5日後報酬", "10日後報酬"]:
-        if column in recent_events.columns:
-            recent_events[column] = recent_events[column].map(format_signed_pct)
-    if "領先天數" in recent_events.columns:
-        recent_events["領先天數"] = recent_events["領先天數"].map(
-            lambda value: "未命中" if pd.isna(value) else f"{int(value)}天"
+    st.markdown("#### 警報時間線")
+    timeline_events = filtered_events.sort_values("event_date", ascending=False).head(8)
+    for _, event in timeline_events.iterrows():
+        event_date = event["event_date"].strftime("%Y-%m-%d") if hasattr(event["event_date"], "strftime") else ""
+        before_value = format_number(event.get("factor_before"), 0)
+        after_value = format_number(event.get("factor_after"), 0)
+        st.markdown(
+            f"- `{event_date}`｜{event.get('lead_factor', '')}轉弱："
+            f"{before_value} → {after_value}｜{factor_event_return_text(event)}"
         )
 
-    st.dataframe(recent_events, use_container_width=True, hide_index=True)
+    with st.expander("查看這檔股票的因子警報明細"):
+        st.caption("明細保留原始事件資料，方便檢查每次警報與後續報酬。")
+        st.dataframe(format_factor_event_detail(filtered_events), use_container_width=True, hide_index=True)
 
 
 def render_score_validation(stock_df):
