@@ -2099,6 +2099,62 @@ def factor_event_interpretation(event, factor_summary):
     return f"{factor}{severity_text}，{result_text}；{reliability_text}。"
 
 
+def factor_visual(factor):
+    """Return a stable icon/color pair for factor warning labels."""
+    visuals = {
+        "技術面": ("🔵", "#38bdf8"),
+        "籌碼面": ("🟡", "#facc15"),
+        "量價面": ("🔴", "#fb7185"),
+    }
+    return visuals.get(str(factor), ("⚪", "#94a3b8"))
+
+
+def factor_warning_bullets(event, factor_summary):
+    """Build short bullet points for the diagnosis card."""
+    factor = event.get("lead_factor", "因子")
+    change = pd.to_numeric(event.get("factor_change"), errors="coerce")
+    hit_rate = pd.to_numeric(factor_summary.get("下跌警報命中率"), errors="coerce")
+    return_3d = pd.to_numeric(event.get("return_3d"), errors="coerce")
+    return_5d = pd.to_numeric(event.get("return_5d"), errors="coerce")
+
+    if pd.notna(change) and change <= -50:
+        strength_text = f"{factor}大幅轉弱"
+    elif pd.notna(change) and change <= -30:
+        strength_text = f"{factor}明顯轉弱"
+    else:
+        strength_text = f"{factor}出現轉弱跡象"
+
+    if pd.notna(return_3d):
+        result_text = f"事件後 3 日報酬 {format_signed_pct(return_3d)}"
+    elif pd.notna(return_5d):
+        result_text = f"事件後 5 日報酬 {format_signed_pct(return_5d)}"
+    else:
+        result_text = "後續資料仍累積中"
+
+    if pd.notna(hit_rate):
+        hit_text = f"歷史單獨命中率：{hit_rate:.0f}%"
+    else:
+        hit_text = "歷史樣本仍不足"
+
+    if pd.notna(hit_rate) and hit_rate >= 60:
+        suggestion = "此因子過去警示效果偏強，可提高警戒"
+    elif pd.notna(hit_rate) and hit_rate >= 40:
+        suggestion = "此因子有一定參考性，建議搭配其他訊號確認"
+    else:
+        suggestion = "建議搭配籌碼或量價一起觀察"
+
+    return [strength_text, result_text, hit_text, suggestion]
+
+
+def signed_pct_html(value):
+    """Format a percentage with color for timeline readability."""
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return '<span style="color:#94a3b8;">累積中</span>'
+    color = "#22c55e" if numeric_value >= 0 else "#ef4444"
+    return f'<span style="color:{color};font-weight:700;">{numeric_value:+.2f}%</span>'
+
+
 def format_factor_event_detail(events_df):
     """Format factor event rows for the detailed inspection table."""
     if events_df.empty:
@@ -2233,76 +2289,87 @@ def render_factor_lead_analysis(stock_df):
     latest_factor = latest_event.get("lead_factor", "")
     latest_factor_summary = summary_df[summary_df["領先因子"].eq(latest_factor)]
     latest_factor_summary = latest_factor_summary.iloc[0] if not latest_factor_summary.empty else pd.Series(dtype=object)
-    latest_interpretation = factor_event_interpretation(latest_event, latest_factor_summary)
+    latest_icon, latest_color = factor_visual(latest_factor)
+    latest_bullets = factor_warning_bullets(latest_event, latest_factor_summary)
 
     with st.container(border=True):
-        st.markdown("#### 最近警報")
-        warn_col1, warn_col2, warn_col3, warn_col4 = st.columns([1.2, 1.1, 1.3, 1.4])
-        warn_col1.metric("領先因子", latest_factor or "N/A")
-        warn_col2.metric("事件日", latest_event_date or "N/A")
-        warn_col3.metric(
+        st.markdown("#### 診斷結果")
+        diagnosis_col1, diagnosis_col2, diagnosis_col3 = st.columns([1.2, 1.1, 1.4])
+        diagnosis_col1.metric("目前最新警報", f"{latest_icon} {latest_factor}轉弱" if latest_factor else "N/A")
+        diagnosis_col2.metric("事件日", latest_event_date or "N/A")
+        diagnosis_col3.metric(
             "因子變化",
             f'{format_number(latest_event.get("factor_before"), 0)} → {format_number(latest_event.get("factor_after"), 0)}',
         )
-        warn_col4.metric("事件後表現", factor_event_return_text(latest_event))
-        st.info(latest_interpretation)
-
-    metric_col1, metric_col2, metric_col3 = st.columns(3)
-    metric_col1.metric("因子事件數", format_integer(total_events))
-    metric_col2.metric("最近警報", latest_event_date)
-    metric_col3.metric("下跌警報命中率", format_signed_pct(hit_rate).replace("+", "") if pd.notna(hit_rate) else "N/A")
+        st.markdown(
+            f"""
+            <div style="margin-top:12px;padding:14px 16px;border-left:4px solid {latest_color};background:rgba(56,189,248,0.08);border-radius:8px;">
+                <div style="font-weight:700;margin-bottom:8px;">⚠️ 判讀</div>
+                <ul style="margin:0;padding-left:22px;line-height:1.85;">
+                    {''.join(f'<li>{item}</li>' for item in latest_bullets)}
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### 歷史準確度")
     display_summary = summary_df.copy()
-    percent_columns = ["事件占比", "下跌警報命中率"]
-    for days in [1, 3, 5, 10]:
-        percent_columns.extend([f"{days}日後平均報酬", f"{days}日後下跌率"])
-    for column in percent_columns:
+    compact_columns = [
+        "領先因子",
+        "事件數",
+        "下跌警報命中率",
+        "3日後平均報酬",
+        "5日後平均報酬",
+        "10日後平均報酬",
+    ]
+    display_summary = display_summary[[column for column in compact_columns if column in display_summary.columns]]
+    for column in ["下跌警報命中率", "3日後平均報酬", "5日後平均報酬", "10日後平均報酬"]:
         if column in display_summary.columns:
             display_summary[column] = display_summary[column].map(lambda value: "N/A" if pd.isna(value) else f"{value:.2f}%")
-    if "平均領先天數" in display_summary.columns:
-        display_summary["平均領先天數"] = display_summary["平均領先天數"].map(
-            lambda value: "N/A" if pd.isna(value) else f"{value:.1f}"
-        )
     st.dataframe(display_summary, use_container_width=True, hide_index=True)
 
     chart_df = filtered_events.sort_values("event_date").copy()
     if not chart_df.empty:
         fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=chart_df["event_date"],
-                y=chart_df["factor_after"],
-                mode="lines+markers",
-                name="因子後值",
-                marker_color="#38bdf8",
-            )
-        )
-        if "deeptrend_after" in chart_df.columns:
+        price_df = chart_df.dropna(subset=["close_at_event"])
+        if not price_df.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=chart_df["event_date"],
-                    y=chart_df["deeptrend_after"],
-                    mode="lines+markers",
-                    name="DeepTrend",
-                    line=dict(color="#facc15", dash="dot"),
+                    x=price_df["event_date"],
+                    y=price_df["close_at_event"],
+                    mode="lines",
+                    name="事件股價",
+                    line=dict(color="#94a3b8", width=2),
                 )
             )
-        if "close_at_event" in chart_df.columns:
+        for factor, factor_events in chart_df.groupby("lead_factor"):
+            icon, color = factor_visual(factor)
+            hover_text = [
+                (
+                    f"{event.get('stock_name', '')}<br>"
+                    f"{event.get('lead_factor', '')}轉弱<br>"
+                    f"因子：{format_number(event.get('factor_before'), 0)} → {format_number(event.get('factor_after'), 0)}<br>"
+                    f"事件收盤：{format_number(event.get('close_at_event'), 2)}<br>"
+                    f"3日：{format_signed_pct(event.get('return_3d'))}<br>"
+                    f"5日：{format_signed_pct(event.get('return_5d'))}"
+                )
+                for _, event in factor_events.iterrows()
+            ]
             fig.add_trace(
                 go.Scatter(
-                    x=chart_df["event_date"],
-                    y=chart_df["close_at_event"],
-                    mode="lines+markers",
-                    name="事件收盤價",
-                    yaxis="y2",
-                    line=dict(color="#fb7185", dash="dash"),
+                    x=factor_events["event_date"],
+                    y=factor_events["close_at_event"],
+                    mode="markers",
+                    name=f"{icon} {factor}",
+                    marker=dict(color=color, size=13, line=dict(color="#0f172a", width=1)),
+                    text=hover_text,
+                    hovertemplate="%{text}<extra></extra>",
                 )
             )
         fig.update_layout(
             height=360,
-            yaxis_title="分數",
-            yaxis2=dict(title="股價", overlaying="y", side="right", showgrid=False),
+            yaxis_title="事件收盤價",
             xaxis_title="事件日",
             legend=dict(orientation="h"),
         )
@@ -2314,9 +2381,20 @@ def render_factor_lead_analysis(stock_df):
         event_date = event["event_date"].strftime("%Y-%m-%d") if hasattr(event["event_date"], "strftime") else ""
         before_value = format_number(event.get("factor_before"), 0)
         after_value = format_number(event.get("factor_after"), 0)
+        factor = event.get("lead_factor", "")
+        icon, color = factor_visual(factor)
+        returns = []
+        for days in [3, 5, 10]:
+            value = event.get(f"return_{days}d")
+            returns.append(f"{days}日 {signed_pct_html(value)}")
         st.markdown(
-            f"- `{event_date}`｜{event.get('lead_factor', '')}轉弱："
-            f"{before_value} → {after_value}｜{factor_event_return_text(event)}"
+            f"""
+            <div style="padding:10px 12px;margin-bottom:8px;border-left:4px solid {color};background:rgba(148,163,184,0.08);border-radius:8px;">
+                <div><code>{event_date}</code>｜<span style="color:{color};font-weight:700;">{icon} {factor}</span> 轉弱：{before_value} → {after_value}</div>
+                <div style="margin-top:4px;color:#cbd5e1;">{'　'.join(returns)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     with st.expander("查看這檔股票的因子警報明細"):
