@@ -4918,7 +4918,11 @@ elif active_view == "📢 因子領先分析":
 elif active_view == "🩺 資料健康檢查":
     render_data_health(df)
 elif active_view == "🌡️ 觀察池溫度":
-    render_market_temperature(df)
+    observation_temperature = build_fast_market_temperature_from_result(df, save_group_history=True)
+    render_market_temperature(
+        df,
+        precomputed_temperature=observation_temperature,
+    )
 elif active_view == "🌡️ 市場池溫度":
     universe_raw_df = load_universe_result()
     universe_df = apply_realtime_prices(prepare_stock_data(universe_raw_df)) if not universe_raw_df.empty else universe_raw_df
