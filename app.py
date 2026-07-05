@@ -1210,7 +1210,7 @@ def chip_sum(df, column):
 
 def render_chip_audit(stock_df):
     """Render an audit page for daily institutional chip data and interval reconciliation."""
-    st.subheader("🧾 籌碼查帳")
+    st.subheader("🧾 籌碼查帳（個股）")
     st.caption("資料來源：output/chip_daily.csv。可用來對照證交所/櫃買中心的週報、月報區間加總。")
 
     chip_df = load_chip_daily_data()
@@ -4708,7 +4708,7 @@ view_options = [
     "🌡️ 觀察池溫度",
     "🌡️ 市場池溫度",
     "🔭 DeepTrend 候選股",
-    "🧾 籌碼查帳",
+    "🧾 籌碼查帳（個股）",
     "📋 詳細表格",
     "🩺 資料健康檢查",
 ]
@@ -4729,7 +4729,7 @@ elif active_view == "📋 詳細表格":
     render_scan_table(filtered_df)
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
-elif active_view == "🧾 籌碼查帳":
+elif active_view == "🧾 籌碼查帳（個股）":
     render_chip_audit(df)
 elif active_view == "📈 分數歷史":
     render_score_history(df)
