@@ -4469,6 +4469,7 @@ def render_market_temperature(
         ("低價轉強股數", stats["股價30元以下且轉強"]),
     ]
     render_backtest_metric_grid(metric_items)
+    render_etf_value_watch(df)
 
     if stats["統計股票數"] == 0:
         st.info("目前沒有可統計股票。")
@@ -4565,7 +4566,6 @@ def render_market_pool_temperature(universe_df):
         limit=10,
         caption=f"從 {pool_size} 檔市場池中挑出前 10 檔個股新鮮轉強候選，重視分數升溫、突破、量能與轉強訊號。",
     )
-    render_etf_value_watch(universe_df)
 
 
 def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", limit=30, caption=None):
