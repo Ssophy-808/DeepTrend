@@ -2477,8 +2477,7 @@ def render_score_validation(stock_df):
     metric_cols[2].metric("有樣本區間", f"{active_bucket_count}/{len(interval_df)}")
 
     st.info(
-        "目前只顯示事件模式：同一檔股票連續待在同一分數區間只算一次。"
-        "達標模式與快照模式仍保留在後台函式，之後需要時可再開啟。"
+        "事件模式：同一檔股票連續待在同一分數區間只算一次，避免重複計算。"
     )
 
     horizons_to_show = []
@@ -2638,6 +2637,10 @@ def render_data_health(stock_df):
         display_cols = [col for col in ["ticker", "name", "group"] if col in missing_df.columns]
         st.warning(f"目前有 {len(missing_df)} 檔 watchlist 股票沒有出現在分析結果。")
         st.dataframe(missing_df[display_cols] if display_cols else missing_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    with st.expander("📋 查看詳細表格", expanded=False):
+        render_scan_table(stock_df)
 
 
 def render_scan_table(filtered_df):
@@ -4426,7 +4429,7 @@ def render_market_pool_temperature(universe_df):
         universe_df,
         title="🌡️ 市場池溫度",
         source_label="市場池",
-        scope_note=f"此分數代表目前 {pool_size} 檔中性市場池，不等同全市場；此頁使用已產生的市場池分析結果，不在前台逐檔下載行情。",
+        scope_note=f"此分數代表目前 {pool_size} 檔中性市場池，不等同全市場。",
         precomputed_temperature=(stats, snapshot_df, group_rank),
     )
 
@@ -4727,7 +4730,6 @@ view_options = [
     "🌡️ 觀察池溫度",
     "🌡️ 市場池溫度",
     "🧾 籌碼查帳（個股）",
-    "📋 詳細表格",
     "🩺 資料健康檢查",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
@@ -4743,8 +4745,6 @@ active_view = st.radio(
 
 if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
-elif active_view == "📋 詳細表格":
-    render_scan_table(filtered_df)
 elif active_view == "🔎 個股查詢":
     render_detail(filtered_df)
 elif active_view == "🧾 籌碼查帳（個股）":
