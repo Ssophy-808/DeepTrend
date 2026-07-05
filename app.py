@@ -2445,7 +2445,7 @@ def render_factor_lead_analysis(stock_df):
 def render_score_validation(stock_df):
     """Render validation statistics for DeepTrend threshold signals."""
     st.subheader("✅ 分數驗證")
-    st.caption("用歷史快照驗證：DeepTrend 分數達標後，後續 1 / 3 / 5 / 10 / 20 個快照的平均表現。")
+    st.caption("使用區間事件模式：同一檔股票只有第一次進入分數區間才計算，避免連續快照重複放大訊號。")
 
     history_df = load_score_history_data()
     if history_df.empty:
@@ -2463,195 +2463,88 @@ def render_score_validation(stock_df):
         st.info("目前歷史資料中還沒有 DeepTrend 分數。之後每日更新累積後，就能開始驗證。")
         return
 
-    validation_mode = st.radio(
-        "驗證模式",
-        ["達標模式", "區間模式"],
-        horizontal=True,
-        help="達標模式看 DeepTrend 高於某個門檻後的表現；區間模式比較不同分數帶的後續表現。",
+    interval_df = build_score_interval_validation(history_df, event_mode=True)
+    if interval_df.empty:
+        st.info("目前沒有足夠的分數歷史資料可做區間事件驗證。")
+        return
+
+    total_signals = pd.to_numeric(interval_df["總訊號數"], errors="coerce").fillna(0).sum()
+    unique_stock_total = prepare_score_validation_forward_returns(history_df)["股票代號"].nunique()
+    active_bucket_count = pd.to_numeric(interval_df["總訊號數"], errors="coerce").fillna(0).gt(0).sum()
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("區間事件數", format_integer(total_signals))
+    metric_cols[1].metric("歷史股票數", format_integer(unique_stock_total))
+    metric_cols[2].metric("有樣本區間", f"{active_bucket_count}/{len(interval_df)}")
+
+    st.info(
+        "目前只顯示事件模式：同一檔股票連續待在同一分數區間只算一次。"
+        "達標模式與快照模式仍保留在後台函式，之後需要時可再開啟。"
     )
 
-    if validation_mode == "區間模式":
-        st.info(
-            "區間模式用固定 DeepTrend 分數帶比較後續表現，"
-            "可以觀察分數是否越高越好，或是否存在 40~60 這類甜蜜區。"
-        )
-        interval_count_mode = st.radio(
-            "區間統計方式",
-            ["快照模式（目前）", "事件模式（建議）"],
-            horizontal=True,
-            help="快照模式會計算每一天符合區間的快照；事件模式只計算同一檔股票第一次進入該區間。",
-        )
-        use_event_mode = interval_count_mode.startswith("事件模式")
-        if use_event_mode:
-            st.caption("事件模式：同一檔股票連續待在同一區間只算一次，只有第一次進入該區間才觸發。")
-        else:
-            st.caption("快照模式：每一筆每日快照都列入統計，適合觀察分數狀態分布，但可能重複計算同一檔股票。")
-
-        interval_df = build_score_interval_validation(history_df, event_mode=use_event_mode)
-        if interval_df.empty:
-            st.info("目前沒有足夠的分數歷史資料可做區間驗證。")
-            return
-
-        display_df = interval_df.copy()
-        display_df["總訊號數"] = display_df["總訊號數"].map(format_integer)
-        display_df["獨立股票數"] = display_df["獨立股票數"].map(format_integer)
-        display_df["平均每檔觸發"] = display_df["平均每檔觸發"].map(lambda value: format_number(value, 2))
-        for horizon in [1, 3, 5, 10, 20]:
-            avg_col = f"{horizon}日平均報酬"
-            win_col = f"{horizon}日上漲率"
-            display_df[avg_col] = display_df[avg_col].map(
-                lambda value: f"{format_number(value, 2)}%" if pd.notna(value) else "N/A"
-            )
-            display_df[win_col] = display_df[win_col].map(
-                lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "N/A"
-            )
-
-        st.markdown("### 分數區間比較表")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        chart_source = interval_df[["區間", "1日平均報酬", "3日平均報酬", "5日平均報酬"]].copy()
-        chart_source = chart_source.melt(id_vars="區間", var_name="觀察天數", value_name="平均報酬率")
-        chart_source = chart_source.dropna(subset=["平均報酬率"])
-        if chart_source.empty:
-            st.info("目前區間資料還不足，暫不繪製平均報酬圖。")
-        else:
-            fig = go.Figure()
-            for horizon_label in ["1日平均報酬", "3日平均報酬", "5日平均報酬"]:
-                horizon_df = chart_source[chart_source["觀察天數"].eq(horizon_label)]
-                fig.add_trace(
-                    go.Bar(
-                        x=horizon_df["區間"],
-                        y=horizon_df["平均報酬率"],
-                        name=horizon_label.replace("平均報酬", "日後"),
-                    )
-                )
-            fig.update_layout(
-                height=360,
-                margin=dict(l=10, r=10, t=30, b=10),
-                yaxis_title="平均報酬率 (%)",
-                barmode="group",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.download_button(
-            "下載分數區間驗證 CSV",
-            data=interval_df.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"score_interval_validation_{'event' if use_event_mode else 'snapshot'}.csv",
-            mime="text/csv",
-        )
-        return
-
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        score_threshold = st.number_input(
-            "DeepTrend 達標分數",
-            min_value=0.0,
-            value=60.0,
-            step=5.0,
-            help="每筆歷史快照只要 DeepTrend 分數大於等於此門檻，就列入驗證樣本。",
-        )
-    with col2:
-        st.info("這裡使用已儲存的每日快照計算，不重新下載行情。若歷史資料還少，10日/20日後樣本數會先偏少。")
-
-    result_df = build_score_validation_result(history_df, score_threshold)
-    if result_df.empty:
-        st.info("目前沒有符合這個分數門檻的歷史訊號。可以先降低達標分數，或等待歷史資料累積。")
-        return
-
-    summary = validation_summary(result_df)
-    total_signals = summary.get("總訊號數", 0)
-    unique_stocks = summary.get("獨立股票數", 0)
-    avg_per_stock = total_signals / unique_stocks if unique_stocks else 0
-
-    top_cols = st.columns(3)
-    top_cols[0].metric("總訊號數", format_integer(total_signals))
-    top_cols[1].metric("獨立股票數", format_integer(unique_stocks))
-    top_cols[2].metric("平均每檔觸發", format_number(avg_per_stock, 2))
-
-    summary_rows = []
+    horizons_to_show = []
     for horizon in [1, 3, 5, 10, 20]:
-        summary_rows.append(
-            {
-                "觀察天數": f"{horizon}個快照後",
-                "有效樣本數": summary.get(f"{horizon}日樣本數", 0),
-                "平均報酬率": summary.get(f"{horizon}日平均報酬", pd.NA),
-                "上漲機率": summary.get(f"{horizon}日上漲機率", pd.NA),
-            }
-        )
+        avg_col = f"{horizon}日平均報酬"
+        win_col = f"{horizon}日上漲率"
+        if avg_col in interval_df.columns and interval_df[avg_col].notna().any():
+            horizons_to_show.append(horizon)
+        elif win_col in interval_df.columns and interval_df[win_col].notna().any():
+            horizons_to_show.append(horizon)
 
-    summary_df = pd.DataFrame(summary_rows)
-    summary_display = summary_df.copy()
-    summary_display["有效樣本數"] = summary_display["有效樣本數"].map(format_integer)
-    summary_display["平均報酬率"] = summary_display["平均報酬率"].map(lambda value: f"{format_number(value, 2)}%" if pd.notna(value) else "")
-    summary_display["上漲機率"] = summary_display["上漲機率"].map(lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "")
+    base_columns = ["區間", "總訊號數", "獨立股票數", "平均每檔觸發"]
+    table_columns = base_columns[:]
+    for horizon in horizons_to_show:
+        table_columns.extend([f"{horizon}日平均報酬", f"{horizon}日上漲率"])
+    table_columns = [column for column in table_columns if column in interval_df.columns]
 
-    st.markdown("### 驗證摘要")
-    st.dataframe(summary_display, use_container_width=True, hide_index=True)
+    display_df = interval_df[table_columns].copy()
+    for column in ["總訊號數", "獨立股票數"]:
+        if column in display_df.columns:
+            display_df[column] = display_df[column].map(format_integer)
+    if "平均每檔觸發" in display_df.columns:
+        display_df["平均每檔觸發"] = display_df["平均每檔觸發"].map(lambda value: format_number(value, 2))
+    for horizon in horizons_to_show:
+        avg_col = f"{horizon}日平均報酬"
+        win_col = f"{horizon}日上漲率"
+        if avg_col in display_df.columns:
+            display_df[avg_col] = display_df[avg_col].map(lambda value: f"{format_number(value, 2)}%" if pd.notna(value) else "N/A")
+        if win_col in display_df.columns:
+            display_df[win_col] = display_df[win_col].map(lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "N/A")
 
-    max_sample_count = int(pd.to_numeric(summary_df["有效樣本數"], errors="coerce").fillna(0).max())
-    if max_sample_count < 10:
-        st.warning(
-            "目前分數歷史樣本還太少，統計結果僅供觀察。"
-            "建議至少累積 10 筆以上有效樣本，再判斷 DeepTrend 分數是否可靠。"
-        )
+    st.markdown("### 分數區間事件比較表")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    chart_df = summary_df.dropna(subset=["平均報酬率"]).copy()
-    chart_df = chart_df[pd.to_numeric(chart_df["有效樣本數"], errors="coerce").fillna(0) >= 3]
-    if chart_df.empty:
-        st.info("目前各觀察天數的有效樣本少於 3 筆，暫不繪製平均報酬圖，避免視覺誤導。")
+    chart_horizons = [horizon for horizon in horizons_to_show if f"{horizon}日平均報酬" in interval_df.columns]
+    chart_source = interval_df[["區間"] + [f"{horizon}日平均報酬" for horizon in chart_horizons]].copy()
+    chart_source = chart_source.melt(id_vars="區間", var_name="觀察天數", value_name="平均報酬率")
+    chart_source = chart_source.dropna(subset=["平均報酬率"])
+    if chart_source.empty:
+        st.info("目前區間資料還不足，暫不繪製平均報酬圖。")
     else:
         fig = go.Figure()
-        fig.add_trace(
-            go.Bar(
-                x=chart_df["觀察天數"],
-                y=chart_df["平均報酬率"],
-                name="平均報酬率",
-                marker_color="#38bdf8",
+        for horizon in chart_horizons:
+            horizon_label = f"{horizon}日平均報酬"
+            horizon_df = chart_source[chart_source["觀察天數"].eq(horizon_label)]
+            if horizon_df.empty:
+                continue
+            fig.add_trace(
+                go.Bar(
+                    x=horizon_df["區間"],
+                    y=horizon_df["平均報酬率"],
+                    name=f"{horizon}日後",
+                )
             )
-        )
         fig.update_layout(
-            height=320,
+            height=360,
             margin=dict(l=10, r=10, t=30, b=10),
             yaxis_title="平均報酬率 (%)",
-            showlegend=False,
+            barmode="group",
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    detail_columns = [
-        "snapshot_date",
-        "股票代號",
-        "股票名稱",
-        "收盤價",
-        "DeepTrend分數",
-        "1日後報酬率",
-        "3日後報酬率",
-        "5日後報酬率",
-        "10日後報酬率",
-        "20日後報酬率",
-        "狀態",
-        "綜合判斷",
-    ]
-    detail_columns = [col for col in detail_columns if col in result_df.columns]
-    detail_df = result_df[detail_columns].copy()
-    detail_df["snapshot_date"] = detail_df["snapshot_date"].dt.strftime("%Y-%m-%d")
-    detail_df = detail_df.rename(columns={"snapshot_date": "觸發日期"})
-
-    for col in ["收盤價", "DeepTrend分數", "1日後報酬率", "3日後報酬率", "5日後報酬率", "10日後報酬率", "20日後報酬率"]:
-        if col in detail_df.columns:
-            suffix = "%" if "報酬率" in col else ""
-            detail_df[col] = detail_df[col].map(lambda value: f"{format_number(value, 2)}{suffix}" if pd.notna(value) else "")
-
-    with st.expander("查看達標訊號明細（最多顯示前 300 筆）"):
-        st.dataframe(detail_df.head(300), use_container_width=True, hide_index=True)
-
-    render_signal_tracking(history_df, result_df)
-
-    csv_df = result_df.copy()
-    csv_df["snapshot_date"] = csv_df["snapshot_date"].dt.strftime("%Y-%m-%d")
     st.download_button(
-        "下載分數驗證結果 CSV",
-        data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"score_validation_{int(score_threshold)}.csv",
+        "下載分數區間事件驗證 CSV",
+        data=interval_df.to_csv(index=False, encoding="utf-8-sig"),
+        file_name="score_interval_validation_event.csv",
         mime="text/csv",
     )
 
