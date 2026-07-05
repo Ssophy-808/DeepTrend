@@ -65,6 +65,7 @@ BASE_DIR = Path(__file__).resolve().parent
 RESULT_FILE = BASE_DIR / "output" / "stock_analysis_result.xlsx"
 UNIVERSE_RESULT_FILE = BASE_DIR / "output" / "universe_analysis_result.xlsx"
 STOCK_ANALYSIS_HISTORY_FILE = BASE_DIR / "output" / "stock_analysis_history.csv"
+FACTOR_LEAD_HISTORY_FILE = BASE_DIR / "output" / "factor_lead_history.csv"
 CHIP_DAILY_FILE = BASE_DIR / "output" / "chip_daily.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
 GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
@@ -1980,6 +1981,210 @@ def render_signal_tracking(history_df, result_df):
         display_df["目前報酬"] = display_df["目前報酬"].map(format_signed_pct)
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
+@st.cache_data(ttl=600)
+def load_factor_lead_history():
+    """Load the derived factor-leading event database generated from daily score snapshots."""
+    if not FACTOR_LEAD_HISTORY_FILE.exists():
+        return pd.DataFrame()
+
+    try:
+        factor_df = pd.read_csv(FACTOR_LEAD_HISTORY_FILE)
+    except Exception:
+        return pd.DataFrame()
+
+    if factor_df.empty:
+        return factor_df
+
+    if "event_date" in factor_df.columns:
+        factor_df["event_date"] = pd.to_datetime(factor_df["event_date"], errors="coerce")
+
+    numeric_columns = [
+        "factor_before",
+        "factor_after",
+        "factor_change",
+        "deeptrend_before",
+        "deeptrend_after",
+        "close_at_event",
+        "close_1d",
+        "close_3d",
+        "close_5d",
+        "close_10d",
+        "return_1d",
+        "return_3d",
+        "return_5d",
+        "return_10d",
+        "lead_days",
+    ]
+    for column in numeric_columns:
+        if column in factor_df.columns:
+            factor_df[column] = pd.to_numeric(factor_df[column], errors="coerce")
+
+    if "price_drop_after" in factor_df.columns:
+        factor_df["price_drop_after"] = factor_df["price_drop_after"].astype(str).str.lower().isin(["true", "1", "yes"])
+
+    return factor_df
+
+
+def summarize_factor_lead_history(factor_df):
+    """Summarize which factor tends to weaken first and how prices behave after the event."""
+    if factor_df.empty or "lead_factor" not in factor_df.columns:
+        return pd.DataFrame()
+
+    rows = []
+    total_events = len(factor_df)
+    for factor, group in factor_df.groupby("lead_factor"):
+        row = {
+            "領先因子": factor,
+            "事件數": len(group),
+            "事件占比": len(group) / total_events * 100 if total_events else 0,
+            "獨立股票數": group["stock_id"].nunique() if "stock_id" in group.columns else 0,
+            "下跌警報命中率": group["price_drop_after"].mean() * 100 if "price_drop_after" in group.columns else pd.NA,
+            "平均領先天數": group["lead_days"].dropna().mean() if "lead_days" in group.columns else pd.NA,
+        }
+        for days in [1, 3, 5, 10]:
+            return_col = f"return_{days}d"
+            returns = pd.to_numeric(group.get(return_col, pd.Series(dtype=float)), errors="coerce").dropna()
+            row[f"{days}日後平均報酬"] = returns.mean() if not returns.empty else pd.NA
+            row[f"{days}日後下跌率"] = returns.lt(0).mean() * 100 if not returns.empty else pd.NA
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values(["下跌警報命中率", "事件數"], ascending=[False, False])
+
+
+def render_factor_lead_analysis(stock_df):
+    """Render factor-leading analysis based on the saved factor event database."""
+    st.subheader("📢 因子領先分析")
+    st.caption("用歷史快照觀察：技術、籌碼、量價誰先轉弱，以及事件後股價是否真的下跌。")
+
+    factor_df = load_factor_lead_history()
+    if factor_df.empty:
+        st.warning(
+            "目前還沒有因子領先資料。請先執行 update_factor_lead_history.py，"
+            "或等待每日更新流程產生 output/factor_lead_history.csv。"
+        )
+        return
+
+    required_columns = {"event_date", "stock_id", "stock_name", "lead_factor", "close_at_event"}
+    missing_columns = sorted(required_columns - set(factor_df.columns))
+    if missing_columns:
+        st.warning(f"因子領先資料缺少必要欄位：{', '.join(missing_columns)}")
+        return
+
+    factor_options = ["全部"] + sorted(factor_df["lead_factor"].dropna().unique().tolist())
+    col_factor, col_days, col_drop = st.columns([1.2, 1.2, 1.4])
+    with col_factor:
+        selected_factor = st.selectbox("領先因子", factor_options)
+    with col_days:
+        min_lead_days = st.selectbox("最短領先天數", ["不限", "1天以上", "3天以上"], index=0)
+    with col_drop:
+        only_drop = st.checkbox("只看後續下跌警報命中", value=False)
+
+    filtered_events = factor_df.copy()
+    if selected_factor != "全部":
+        filtered_events = filtered_events[filtered_events["lead_factor"].eq(selected_factor)]
+    if min_lead_days != "不限" and "lead_days" in filtered_events.columns:
+        threshold = 1 if min_lead_days.startswith("1") else 3
+        filtered_events = filtered_events[filtered_events["lead_days"].ge(threshold)]
+    if only_drop and "price_drop_after" in filtered_events.columns:
+        filtered_events = filtered_events[filtered_events["price_drop_after"]]
+
+    summary_df = summarize_factor_lead_history(filtered_events)
+    if summary_df.empty:
+        st.info("目前篩選條件下沒有可統計的因子事件。")
+        return
+
+    total_events = len(filtered_events)
+    unique_stocks = filtered_events["stock_id"].nunique() if "stock_id" in filtered_events.columns else 0
+    hit_rate = filtered_events["price_drop_after"].mean() * 100 if "price_drop_after" in filtered_events.columns else pd.NA
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("因子事件數", format_integer(total_events))
+    metric_col2.metric("獨立股票數", format_integer(unique_stocks))
+    metric_col3.metric("下跌警報命中率", format_signed_pct(hit_rate).replace("+", "") if pd.notna(hit_rate) else "N/A")
+
+    st.markdown("### 因子統計")
+    display_summary = summary_df.copy()
+    percent_columns = ["事件占比", "下跌警報命中率"]
+    for days in [1, 3, 5, 10]:
+        percent_columns.extend([f"{days}日後平均報酬", f"{days}日後下跌率"])
+    for column in percent_columns:
+        if column in display_summary.columns:
+            display_summary[column] = display_summary[column].map(lambda value: "N/A" if pd.isna(value) else f"{value:.2f}%")
+    if "平均領先天數" in display_summary.columns:
+        display_summary["平均領先天數"] = display_summary["平均領先天數"].map(
+            lambda value: "N/A" if pd.isna(value) else f"{value:.1f}"
+        )
+    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+    chart_df = summary_df.copy()
+    if not chart_df.empty and "下跌警報命中率" in chart_df.columns:
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=chart_df["領先因子"],
+                y=chart_df["下跌警報命中率"],
+                name="下跌警報命中率",
+                marker_color="#38bdf8",
+            )
+        )
+        fig.update_layout(
+            height=320,
+            yaxis_title="命中率（%）",
+            xaxis_title="領先因子",
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### 最近因子警報")
+    recent_events = filtered_events.sort_values("event_date", ascending=False).head(200).copy()
+    display_columns = [
+        "event_date",
+        "stock_id",
+        "stock_name",
+        "lead_factor",
+        "factor_before",
+        "factor_after",
+        "factor_change",
+        "close_at_event",
+        "return_1d",
+        "return_3d",
+        "return_5d",
+        "return_10d",
+        "lead_days",
+    ]
+    display_columns = [column for column in display_columns if column in recent_events.columns]
+    recent_events = recent_events[display_columns]
+    rename_map = {
+        "event_date": "事件日",
+        "stock_id": "股票代號",
+        "stock_name": "股票名稱",
+        "lead_factor": "領先因子",
+        "factor_before": "因子前值",
+        "factor_after": "因子後值",
+        "factor_change": "因子變化",
+        "close_at_event": "事件收盤價",
+        "return_1d": "1日後報酬",
+        "return_3d": "3日後報酬",
+        "return_5d": "5日後報酬",
+        "return_10d": "10日後報酬",
+        "lead_days": "領先天數",
+    }
+    recent_events = recent_events.rename(columns=rename_map)
+    if "事件日" in recent_events.columns:
+        recent_events["事件日"] = pd.to_datetime(recent_events["事件日"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for column in ["因子前值", "因子後值", "因子變化", "事件收盤價"]:
+        if column in recent_events.columns:
+            recent_events[column] = recent_events[column].map(lambda value: "" if pd.isna(value) else format_number(value, 2))
+    for column in ["1日後報酬", "3日後報酬", "5日後報酬", "10日後報酬"]:
+        if column in recent_events.columns:
+            recent_events[column] = recent_events[column].map(format_signed_pct)
+    if "領先天數" in recent_events.columns:
+        recent_events["領先天數"] = recent_events["領先天數"].map(
+            lambda value: "未命中" if pd.isna(value) else f"{int(value)}天"
+        )
+
+    st.dataframe(recent_events, use_container_width=True, hide_index=True)
 
 
 def render_score_validation(stock_df):
@@ -4290,6 +4495,7 @@ with st.container(border=True):
                 main_result = subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
                 if main_result.returncode == 0:
                     subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
+                    subprocess.run([sys.executable, str(BASE_DIR / "update_factor_lead_history.py")], check=False)
             st.cache_data.clear()
             if main_result.returncode == 0:
                 st.success("更新完成！")
@@ -4328,6 +4534,7 @@ view_options = [
     "📊 股票雷達",
     "📈 分數歷史",
     "✅ 分數驗證",
+    "📢 因子領先分析",
     "🔎 個股查詢",
     "🌡️ 觀察池溫度",
     "🌡️ 市場池溫度",
@@ -4359,6 +4566,8 @@ elif active_view == "📈 分數歷史":
     render_score_history(df)
 elif active_view == "✅ 分數驗證":
     render_score_validation(df)
+elif active_view == "📢 因子領先分析":
+    render_factor_lead_analysis(df)
 elif active_view == "🩺 資料健康檢查":
     render_data_health(df)
 elif active_view == "🌡️ 觀察池溫度":
