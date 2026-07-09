@@ -2708,20 +2708,20 @@ def close_update_status(timestamp_text, today_text, complete_label="今天收盤
         return "⚠️ 無法判斷時間"
 
     if timestamp.strftime("%Y-%m-%d") != today_text:
-        return "⚠️ 不是今天"
+        return "⚠️ 尚未更新"
 
     current_time = timestamp.time()
     if current_time < datetime.strptime("13:30", "%H:%M").time():
-        return "⚠️ 今天盤中更新，非收盤後資料"
+        return "⚠️ 今天盤中更新，非收盤資料"
     if current_time < datetime.strptime("15:30", "%H:%M").time():
-        return "⚠️ 今天盤後更新中，可能仍未完整"
+        return "⚠️ 已收盤，資料可能尚未完整"
     return f"✅ {complete_label}"
 
 
 def dated_file_status(latest_date, modified_text, today_text, complete_label):
     """Combine data-date and modified-time checks for health display."""
     if latest_date != today_text:
-        return "⚠️ 尚未看到今天"
+        return "⚠️ 尚未更新"
     if modified_text:
         return close_update_status(modified_text, today_text, complete_label)
     return f"✅ {complete_label}"

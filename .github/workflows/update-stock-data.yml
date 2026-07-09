@@ -3,8 +3,11 @@ name: Update stock data
 on:
   workflow_dispatch:
   schedule:
-    # 07:30 UTC = 15:30 Asia/Taipei, Monday to Friday.
+    # 06:00/07:30/08:30 UTC = 14:00/15:30/16:30 Asia/Taipei, Monday to Friday.
+    # Run multiple times after close because TWSE/TPEX/yfinance/chip data can arrive at different times.
+    - cron: "0 6 * * 1-5"
     - cron: "30 7 * * 1-5"
+    - cron: "30 8 * * 1-5"
 
 permissions:
   contents: write
