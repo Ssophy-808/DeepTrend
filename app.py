@@ -50,6 +50,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from textwrap import dedent
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
 import pandas as pd
@@ -70,6 +71,7 @@ CHIP_DAILY_FILE = BASE_DIR / "output" / "chip_daily.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
 GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
 BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -2678,10 +2680,10 @@ def render_score_validation(stock_df):
 
 
 def file_modified_text(path):
-    """Return a readable modified timestamp for a local data file."""
+    """Return a readable modified timestamp in Asia/Taipei for a local data file."""
     if not path.exists():
         return ""
-    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=TAIPEI_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def latest_csv_date(path, column):
@@ -2732,7 +2734,7 @@ def render_data_health(stock_df):
     st.subheader("🩺 資料健康檢查")
     st.caption("檢查本地/雲端資料檔是否有更新，方便確認 DeepTrend 今天的資料狀態。")
 
-    today_text = date.today().isoformat()
+    today_text = datetime.now(TAIPEI_TZ).date().isoformat()
     result_modified = file_modified_text(RESULT_FILE)
     chip_modified = file_modified_text(CHIP_DAILY_FILE)
     history_modified = file_modified_text(STOCK_ANALYSIS_HISTORY_FILE)
