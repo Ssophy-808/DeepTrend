@@ -2686,6 +2686,35 @@ def latest_csv_date(path, column):
     return dates.max().strftime("%Y-%m-%d")
 
 
+def close_update_status(timestamp_text, today_text, complete_label="今天收盤後更新"):
+    """Classify today's data freshness by Taiwan regular-session timing."""
+    if not timestamp_text:
+        return "⚠️ 找不到資料"
+
+    timestamp = pd.to_datetime(timestamp_text, errors="coerce")
+    if pd.isna(timestamp):
+        return "⚠️ 無法判斷時間"
+
+    if timestamp.strftime("%Y-%m-%d") != today_text:
+        return "⚠️ 不是今天"
+
+    current_time = timestamp.time()
+    if current_time < datetime.strptime("13:30", "%H:%M").time():
+        return "⚠️ 今天盤中更新，非收盤後資料"
+    if current_time < datetime.strptime("15:30", "%H:%M").time():
+        return "⚠️ 今天盤後更新中，可能仍未完整"
+    return f"✅ {complete_label}"
+
+
+def dated_file_status(latest_date, modified_text, today_text, complete_label):
+    """Combine data-date and modified-time checks for health display."""
+    if latest_date != today_text:
+        return "⚠️ 尚未看到今天"
+    if modified_text:
+        return close_update_status(modified_text, today_text, complete_label)
+    return f"✅ {complete_label}"
+
+
 def render_data_health(stock_df):
     """Render local data freshness checks for the daily update pipeline."""
     st.subheader("🩺 資料健康檢查")
@@ -2693,25 +2722,26 @@ def render_data_health(stock_df):
 
     today_text = date.today().isoformat()
     result_modified = file_modified_text(RESULT_FILE)
-    result_modified_date = result_modified[:10] if result_modified else ""
+    chip_modified = file_modified_text(CHIP_DAILY_FILE)
+    history_modified = file_modified_text(STOCK_ANALYSIS_HISTORY_FILE)
     chip_latest_date = latest_csv_date(CHIP_DAILY_FILE, "date")
     history_latest_date = latest_csv_date(STOCK_ANALYSIS_HISTORY_FILE, "snapshot_date")
 
     rows = [
         {
             "檢查項目": "分析結果是否今天更新",
-            "目前狀態": "✅ 今天已更新" if result_modified_date == today_text else "⚠️ 不是今天",
+            "目前狀態": close_update_status(result_modified, today_text, "今天收盤後更新"),
             "最新日期/時間": result_modified or "找不到資料",
         },
         {
             "檢查項目": "籌碼明細是否有今天資料",
-            "目前狀態": "✅ 今天有資料" if chip_latest_date == today_text else "⚠️ 尚未看到今天",
-            "最新日期/時間": chip_latest_date or "找不到日期",
+            "目前狀態": dated_file_status(chip_latest_date, chip_modified, today_text, "今天收盤後有資料"),
+            "最新日期/時間": chip_modified or chip_latest_date or "找不到日期",
         },
         {
             "檢查項目": "分數歷史是否有今天快照",
-            "目前狀態": "✅ 今天有快照" if history_latest_date == today_text else "⚠️ 尚未看到今天",
-            "最新日期/時間": history_latest_date or "找不到日期",
+            "目前狀態": dated_file_status(history_latest_date, history_modified, today_text, "今天收盤後有快照"),
+            "最新日期/時間": history_modified or history_latest_date or "找不到日期",
         },
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
