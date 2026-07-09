@@ -395,6 +395,18 @@ def render_html(html):
     else:
         st.markdown(html, unsafe_allow_html=True)
 
+
+def render_visit_badge():
+    """Show a lightweight public page-view counter that starts counting after deployment."""
+    badge_url = (
+        "https://hits.sh/deeptrend-zdvlvdt3nx73pvfbr7cp6i.streamlit.app.svg"
+        "?label=%E7%B6%B2%E7%AB%99%E7%80%8F%E8%A6%BD%E9%87%8F"
+        "&color=0ea5e9"
+        "&labelColor=111827"
+    )
+    st.markdown(f"![網站瀏覽量]({badge_url})")
+
+
 def format_number(value, decimals=2):
     """Format floats for UI display while keeping missing values blank."""
     if pd.isna(value):
@@ -4865,6 +4877,7 @@ st.set_page_config(page_title="DeepTrend", page_icon="🔥", layout="wide")
 
 st.title("🔥 DeepTrend")
 st.caption("AI Quant Trading Radar")
+render_visit_badge()
 
 df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
 
