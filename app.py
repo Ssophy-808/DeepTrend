@@ -388,6 +388,13 @@ def color_status(val):
     return ""
 
 
+def render_html(html):
+    """Render small HTML UI blocks reliably across Streamlit versions."""
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
 def format_number(value, decimals=2):
     """Format floats for UI display while keeping missing values blank."""
     if pd.isna(value):
@@ -1246,7 +1253,7 @@ def render_stock_radar(filtered_df):
         ).replace("\n", "")
 
         with columns[index % 3]:
-            st.markdown(html, unsafe_allow_html=True)
+            render_html(html)
             stock_code = str(row["股票代號"])
             stock_name = str(row["股票名稱"])
             st.button(
