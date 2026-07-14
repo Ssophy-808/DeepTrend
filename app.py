@@ -1349,7 +1349,7 @@ def format_lots(value):
 def render_chip_audit(stock_df, default_stock=None):
     """Render an audit page for daily institutional chip data and interval reconciliation."""
     st.subheader("🧾 籌碼查帳（個股）")
-    st.caption("可用來對照證交所/櫃買中心的週報、月報區間加總。")
+    st.caption("📌 本頁資料可直接與證交所每日三大法人買賣超交叉驗證。")
 
     chip_df = load_chip_daily_data()
     if chip_df.empty:
@@ -1763,6 +1763,7 @@ def build_score_history_figure(selected_df, height=360):
         "量價分數": "#facc15",
     }
     for col in available_score_columns:
+        default_visible = True if col == "DeepTrend分數" else "legendonly"
         fig.add_trace(
             go.Scatter(
                 x=selected_df["snapshot_date"],
@@ -1770,6 +1771,7 @@ def build_score_history_figure(selected_df, height=360):
                 mode="lines+markers",
                 name=col,
                 line=dict(color=color_map.get(col)),
+                visible=default_visible,
             ),
             secondary_y=False,
         )
@@ -3280,6 +3282,10 @@ def render_diagnosis_overview(selected_row, selected_stock):
     warning_factor = diagnosis_warning_factor(selected_stock)
     diagnosis = selected_row.get("\u7d9c\u5408\u5224\u65b7", "\u89c0\u5bdf")
     status = selected_row.get("\u72c0\u614b", "\u8cc7\u6599\u4e0d\u8db3")
+    asset_type = selected_row.get("\u8cc7\u7522\u985e\u578b", "\u500b\u80a1")
+    is_etf = asset_type == "ETF"
+    etf_value_score = selected_row.get("ETF Value Score", pd.NA)
+    etf_reading = selected_row.get("ETF\u5e03\u5c40\u5224\u8b80", "\u8cc7\u6599\u4e0d\u8db3")
     if pd.notna(score) and score >= 80:
         headline = "\u5f37\u52e2\u4f46\u7559\u610f\u904e\u71b1"
     elif pd.notna(score) and score >= 60:
@@ -3290,8 +3296,22 @@ def render_diagnosis_overview(selected_row, selected_stock):
         headline = "\u504f\u5f31\u89c0\u5bdf"
     else:
         headline = "\u98a8\u96aa\u504f\u9ad8"
+    if is_etf:
+        if pd.isna(etf_value_score):
+            headline = "\u0045\u0054\u0046\u8cc7\u6599\u4e0d\u8db3"
+        elif etf_value_score < 25:
+            headline = "\u63a5\u8fd1\u5206\u6279\u89c0\u5bdf\u5340"
+        elif etf_value_score < 45:
+            headline = "\u53ef\u7559\u610f\u5206\u6279\u6a5f\u6703"
+        elif etf_value_score < 70:
+            headline = "\u0045\u0054\u0046\u4f4d\u7f6e\u4e2d\u6027"
+        else:
+            headline = "\u0045\u0054\u0046\u77ed\u7dda\u504f\u71b1"
     st.markdown(f"### {selected_stock} {stock_name}")
-    st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5c{bucket_label}\uff08{bucket_reading}\uff09\uff5c{diagnosis}")
+    if is_etf:
+        st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5cETF\u5206\u6279\u5e03\u5c40\uff1a{etf_reading}\uff5cTrend Score\uff1a{format_number(score, 1)}")
+    else:
+        st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5c{bucket_label}\uff08{bucket_reading}\uff09\uff5c{diagnosis}")
     if history_stats:
         current_streak = history_stats.get("current_streak", 0)
         median_stay = history_stats.get("median_stay", pd.NA)
@@ -3330,20 +3350,70 @@ def render_diagnosis_overview(selected_row, selected_stock):
         warning_value = "-"
         warning_note = "\u6a23\u672c\u4e0d\u8db3"
 
+    if pd.to_numeric(progress_text.replace("\u7d04", "").replace("%", "").strip(), errors="coerce") <= 100:
+        life_reading = "\u76ee\u524d\u4ecd\u5728\u6b77\u53f2\u505c\u7559\u7bc4\u570d"
+    elif progress_text == "\u8cc7\u6599\u4e0d\u8db3":
+        life_reading = "\u5340\u9593\u58fd\u547d\u8cc7\u6599\u4ecd\u5728\u7d2f\u7a4d"
+    else:
+        life_reading = "\u505c\u7559\u6642\u9593\u5df2\u9ad8\u65bc\u6b77\u53f2\u4e2d\u4f4d\u6578"
+
     summary_cols = st.columns(4)
-    summary_cols[0].metric("\u76ee\u524d DT", format_number(score, 1), headline)
-    summary_cols[1].metric("\u9032\u5834\u5340\u9593", bucket_label, bucket_reading)
-    summary_cols[2].metric("\u5340\u9593\u58fd\u547d", f"{current_streak}\u65e5 / {median_text}", progress_text)
-    summary_cols[3].metric("\u4e3b\u8981\u5f71\u97ff", impact_label, impact_value)
+    summary_cols[0].metric("Trend Score" if is_etf else "\u76ee\u524d DT", format_number(score, 1), "\u77ed\u7dda\u8da8\u52e2\u8f14\u52a9" if is_etf else headline)
+    if is_etf:
+        summary_cols[1].metric("ETF \u5206\u6279\u5e03\u5c40", format_number(etf_value_score, 1), etf_reading)
+    else:
+        summary_cols[1].metric("\u9032\u5834\u5340\u9593", bucket_label, bucket_reading)
+    with summary_cols[2]:
+        st.markdown(
+            f"""
+            <div style="padding:10px 0;">
+                <div style="color:#9ca3af;font-size:14px;font-weight:700;">\u5340\u9593\u58fd\u547d</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;">
+                    <div>
+                        <div style="color:#9ca3af;font-size:13px;">\u5df2\u505c\u7559</div>
+                        <div style="color:#ffffff;font-size:28px;font-weight:800;line-height:1.2;">{current_streak} \u5929</div>
+                    </div>
+                    <div>
+                        <div style="color:#9ca3af;font-size:13px;">\u6b77\u53f2\u4e2d\u4f4d\u6578</div>
+                        <div style="color:#ffffff;font-size:28px;font-weight:800;line-height:1.2;">{median_text.replace("\u65e5", " \u5929")}</div>
+                    </div>
+                </div>
+                <div style="color:#9ca3af;font-size:13px;margin-top:8px;">\u9032\u5ea6\uff1a{progress_text}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with summary_cols[3]:
+        st.markdown(
+            f"""
+            <div style="padding:10px 0;">
+                <div style="color:#9ca3af;font-size:14px;font-weight:700;">\u4e3b\u8981\u5f71\u97ff</div>
+                <div style="color:#ffffff;font-size:34px;font-weight:800;line-height:1.2;margin-top:8px;">{impact_label}</div>
+                <div style="display:inline-block;margin-top:10px;padding:4px 10px;border-radius:999px;background:#1f2937;color:#d1d5db;font-size:14px;font-weight:700;">
+                    \u5f71\u97ff\u5360\u6bd4 {impact_value}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.markdown(
         f"""
         <div style="padding:14px 16px;border:1px solid #2f3542;border-radius:8px;background:#111827;margin-top:12px;">
             <div style="font-weight:800;color:#ffffff;margin-bottom:8px;">\u8a3a\u65b7\u91cd\u9ede</div>
             <div style="color:#d1d5db;line-height:1.8;">
-                \u2022 \u76ee\u524d\u72c0\u614b\uff1a{status}\uff0c\u7d9c\u5408\u5224\u65b7\uff1a{diagnosis}<br>
-                \u2022 \u5340\u9593\u9032\u5ea6\uff1a{progress_text}\uff0c\u9032\u5165\u65b9\u5411\uff1a{entry_direction}<br>
-                \u2022 \u6700\u6709\u6548\u9810\u8b66\u56e0\u5b50\uff1a{warning_label}\uff0c5\u65e5\u4e0b\u8dcc\u547d\u4e2d\u7387\uff1a{warning_value}
+                {
+                    f"\u2022 ETF Value Score\uff1a{format_number(etf_value_score, 1)}\uff0c{etf_reading}<br>"
+                    f"\u2022 Trend Score\uff1a{format_number(score, 1)}\uff0c\u53ea\u7528\u4f86\u8f14\u52a9\u5224\u65b7\u77ed\u7dda\u662f\u5426\u8f49\u5f37<br>"
+                    f"\u2022 ETF \u4e0d\u7528\u500b\u80a1\u9032\u5834\u5206\u6578\u908f\u8f2f\u5224\u8b80<br>"
+                    f"\u2022 \u82e5 ETF Value Score \u504f\u4f4e\uff0c\u4ee3\u8868\u8f03\u63a5\u8fd1\u5206\u6279\u89c0\u5bdf\u5340"
+                    if is_etf
+                    else
+                    f"\u2022 DT \u4f4d\u65bc {bucket_label}<br>"
+                    f"\u2022 \u5c6c\u65bc{entry_direction}<br>"
+                    f"\u2022 {life_reading}<br>"
+                    f"\u2022 {impact_label}\u4ecd\u70ba\u4e3b\u8981\u652f\u6490"
+                }
             </div>
         </div>
         """,
@@ -5196,7 +5266,14 @@ def render_k_chart(k_df, chart_mode="candlestick"):
     )
 
     fig.add_trace(
-        go.Scatter(x=x_values, y=k_df["RSI"], mode="lines", name="RSI", line=dict(color="#facc15")),
+        go.Scatter(
+            x=x_values,
+            y=k_df["RSI"],
+            mode="lines",
+            name="RSI（相對強弱）",
+            line=dict(color="#facc15"),
+            hovertemplate="日期：%{x}<br>RSI：%{y:.2f}<br>70以上偏熱，30以下偏弱<extra></extra>",
+        ),
         row=3,
         col=1,
     )
@@ -5223,7 +5300,7 @@ def render_k_chart(k_df, chart_mode="candlestick"):
 # Streamlit 會從這裡開始由上而下執行：
 # 1. 設定頁面。
 # 2. 讀取並整理 output Excel。
-# 3. 顯示更新按鈕與篩選條件。
+# 3. 顯示更新按鈕。
 # 4. 依功能選單呼叫對應 render_* 頁面函式。
 
 st.set_page_config(page_title="DeepTrend", page_icon="🔥", layout="wide")
@@ -5237,39 +5314,24 @@ df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
 status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
 min_score_value = int(df["技術分數"].min())
 max_score_value = int(df["技術分數"].max())
+selected_status = "全部"
+min_score = min_score_value
+keyword = ""
 
 with st.container(border=True):
-    update_col, status_col, score_col, search_col = st.columns([1.1, 1.2, 1.6, 2.1])
-
-    with update_col:
-        st.caption("資料")
-        if st.button("🔄 更新市場資料", use_container_width=True):
-            with st.spinner("正在更新資料，請稍等..."):
-                subprocess.run([sys.executable, str(BASE_DIR / "update_chip.py")], check=False)
-                main_result = subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
-                if main_result.returncode == 0:
-                    subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
-                    subprocess.run([sys.executable, str(BASE_DIR / "update_factor_lead_history.py")], check=False)
-            st.cache_data.clear()
+    if st.button("🔄 更新市場資料", use_container_width=True):
+        with st.spinner("正在更新資料，請稍等..."):
+            subprocess.run([sys.executable, str(BASE_DIR / "update_chip.py")], check=False)
+            main_result = subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
             if main_result.returncode == 0:
-                st.success("更新完成！")
-            else:
-                st.warning("主分析結果不完整，已保留上一個完整交易日資料。")
-            st.rerun()
-
-    with status_col:
-        selected_status = st.selectbox("狀態", status_options)
-
-    with score_col:
-        min_score = st.slider(
-            "最低技術分數",
-            min_value=min_score_value,
-            max_value=max_score_value,
-            value=min_score_value,
-        )
-
-    with search_col:
-        keyword = st.text_input("搜尋股票名稱或代號")
+                subprocess.run([sys.executable, str(BASE_DIR / "update_history.py")], check=False)
+                subprocess.run([sys.executable, str(BASE_DIR / "update_factor_lead_history.py")], check=False)
+        st.cache_data.clear()
+        if main_result.returncode == 0:
+            st.success("更新完成！")
+        else:
+            st.warning("主分析結果不完整，已保留上一個完整交易日資料。")
+        st.rerun()
 
 filtered_df = df.copy()
 
