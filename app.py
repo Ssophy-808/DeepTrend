@@ -5321,19 +5321,12 @@ st.set_page_config(page_title="DeepTrend", page_icon="🔥", layout="wide")
 
 st.title("🔥 DeepTrend")
 st.caption("AI Quant Trading Radar")
-render_visit_badge()
 
-df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
-
-status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
-min_score_value = int(df["技術分數"].min())
-max_score_value = int(df["技術分數"].max())
-selected_status = "全部"
-min_score = min_score_value
-keyword = ""
-
-with st.container(border=True):
-    if st.button("🔄 更新市場資料", use_container_width=True):
+visit_col, update_col = st.columns([4, 1])
+with visit_col:
+    render_visit_badge()
+with update_col:
+    if st.button("🔄 更新市場資料", use_container_width=True, key="top_update_market_data"):
         with st.spinner("正在更新資料，請稍等..."):
             subprocess.run([sys.executable, str(BASE_DIR / "update_chip.py")], check=False)
             main_result = subprocess.run([sys.executable, str(BASE_DIR / "main.py")], check=False)
@@ -5346,6 +5339,15 @@ with st.container(border=True):
         else:
             st.warning("主分析結果不完整，已保留上一個完整交易日資料。")
         st.rerun()
+
+df = apply_realtime_prices(prepare_stock_data(load_stock_result()))
+
+status_options = ["全部"] + sorted(df["狀態"].dropna().unique().tolist())
+min_score_value = int(df["技術分數"].min())
+max_score_value = int(df["技術分數"].max())
+selected_status = "全部"
+min_score = min_score_value
+keyword = ""
 
 filtered_df = df.copy()
 
