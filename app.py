@@ -2403,17 +2403,18 @@ def render_factor_lead_analysis(stock_df, default_stock=None):
     if factor_df.empty:
         st.info("目前因子領先資料沒有可用的股票事件。")
         return
+    factor_df["stock_key"] = factor_df["stock_id"].map(lambda value: str(normalize_tw_symbol(value)).split(".")[0])
 
     stock_label_map = build_stock_label_map(stock_df) if not stock_df.empty else {}
     event_stock_map = {
-        str(row["stock_id"]): f'{row["stock_id"]}｜{row.get("stock_name", "")}'
-        for _, row in factor_df.drop_duplicates(subset=["stock_id"]).iterrows()
+        str(row["stock_key"]): f'{row["stock_key"]}｜{row.get("stock_name", "")}'
+        for _, row in factor_df.drop_duplicates(subset=["stock_key"]).iterrows()
     }
     for stock_id, label in event_stock_map.items():
         stock_label_map.setdefault(stock_id, label)
 
     stock_options = sorted(
-        factor_df["stock_id"].dropna().astype(str).unique().tolist(),
+        factor_df["stock_key"].dropna().astype(str).unique().tolist(),
         key=stock_code_key,
     )
     if not stock_options:
@@ -2421,6 +2422,10 @@ def render_factor_lead_analysis(stock_df, default_stock=None):
         return
 
     default_code = str(normalize_tw_symbol(default_stock)).split(".")[0] if default_stock else ""
+    if default_code and default_code not in stock_options:
+        default_name = stock_label_map.get(default_code, default_stock)
+        st.info(f"{default_name} 目前沒有因子領先事件資料，等歷史事件累積後會自動顯示。")
+        return
     selected_index = stock_options.index(default_code) if default_code in stock_options else 0
     factor_key = f"factor_lead_stock_{default_code}" if default_code else "factor_lead_stock"
     selected_stock = st.selectbox(
@@ -2431,7 +2436,7 @@ def render_factor_lead_analysis(stock_df, default_stock=None):
         key=factor_key,
     )
 
-    stock_events = factor_df[factor_df["stock_id"].astype(str).eq(str(selected_stock))].copy()
+    stock_events = factor_df[factor_df["stock_key"].astype(str).eq(str(selected_stock))].copy()
     stock_name = stock_events["stock_name"].dropna().iloc[-1] if not stock_events["stock_name"].dropna().empty else ""
 
     factor_options = ["全部"] + sorted(stock_events["lead_factor"].dropna().unique().tolist())
