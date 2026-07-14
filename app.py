@@ -1151,7 +1151,7 @@ def open_stock_detail(stock_code):
     stock_code = str(stock_code)
     st.session_state["pending_detail_stock"] = stock_code
     st.session_state["detail_stock"] = stock_code
-    st.session_state["active_view"] = "🔎 個股查詢"
+    st.session_state["active_view"] = "📋 股票診斷書"
 
 
 def render_stock_radar(filtered_df):
@@ -1331,7 +1331,7 @@ def chip_sum(df, column):
     return int(pd.to_numeric(df[column], errors="coerce").fillna(0).sum())
 
 
-def render_chip_audit(stock_df):
+def render_chip_audit(stock_df, default_stock=None):
     """Render an audit page for daily institutional chip data and interval reconciliation."""
     st.subheader("🧾 籌碼查帳（個股）")
     st.caption("可用來對照證交所/櫃買中心的週報、月報區間加總。")
@@ -1369,13 +1369,18 @@ def render_chip_audit(stock_df):
     min_date = chip_df["date"].min().date()
     max_date = chip_df["date"].max().date()
 
+    default_code = str(normalize_tw_symbol(default_stock)).split(".")[0] if default_stock else ""
+    chip_labels = [label for _, label in stock_options]
+    selected_index = next((idx for idx, (code, _) in enumerate(stock_options) if str(code) == default_code), 0)
+    chip_key = f"chip_audit_stock_{default_code}" if default_code else "chip_audit_stock"
+
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         selected_label = st.selectbox(
             "選擇股票",
-            [label for _, label in stock_options],
-            index=0,
-            key="chip_audit_stock",
+            chip_labels,
+            index=selected_index,
+            key=chip_key,
         )
     with col2:
         start_date = st.date_input("開始日期", value=min_date, min_value=min_date, max_value=max_date)
@@ -1580,11 +1585,11 @@ def score_signal_label(row, previous_row=None):
     prev_score = row_number(previous_row, "DeepTrend分數") if previous_row is not None else pd.NA
 
     if pd.notna(score) and score >= 60 and (pd.isna(prev_score) or prev_score < 60):
-        return "▲ 轉強訊號"
+        return "▲ 轉強事件"
     if pd.notna(score) and score < 40 and pd.notna(prev_score) and prev_score >= 40:
-        return "▼ 風險訊號"
+        return "▼ 轉弱預警"
     if pd.notna(close) and pd.notna(ma5) and close < ma5 and pd.notna(prev_score) and prev_score >= 60:
-        return "▼ 風險訊號"
+        return "▼ 轉弱預警"
     return ""
 
 
@@ -1698,15 +1703,15 @@ def build_score_history_figure(selected_df, height=360):
         )
 
     if "DeepTrend分數" in selected_df.columns:
-        buy_df = selected_df[selected_df["買賣訊號"].eq("▲ 轉強訊號")]
-        sell_df = selected_df[selected_df["買賣訊號"].eq("▼ 風險訊號")]
+        buy_df = selected_df[selected_df["買賣訊號"].eq("▲ 轉強事件")]
+        sell_df = selected_df[selected_df["買賣訊號"].eq("▼ 轉弱預警")]
         if not buy_df.empty:
             fig.add_trace(
                 go.Scatter(
                     x=buy_df["snapshot_date"],
                     y=buy_df["DeepTrend分數"],
                     mode="markers",
-                    name="轉強訊號",
+                    name="轉強事件",
                     marker=dict(color="#22c55e", symbol="triangle-up", size=13),
                 ),
                 secondary_y=False,
@@ -1717,7 +1722,7 @@ def build_score_history_figure(selected_df, height=360):
                     x=sell_df["snapshot_date"],
                     y=sell_df["DeepTrend分數"],
                     mode="markers",
-                    name="風險訊號",
+                    name="轉弱預警",
                     marker=dict(color="#ef4444", symbol="triangle-down", size=13),
                 ),
                 secondary_y=False,
@@ -1734,15 +1739,15 @@ def build_score_history_figure(selected_df, height=360):
     return fig
 
 
-def render_score_history(stock_df):
+def render_score_history(stock_df, default_stock=None):
     """Render DeepTrend and component score history for one stock."""
     st.subheader("📈 分數歷史")
     st.caption("用來觀察 DeepTrend 分數是否持續轉強或轉弱。")
     st.caption("階段小標：避開（<20） → 轉弱（20-39） → 整理（40-59） → 轉強（60-79） → 強勢（80+）")
     st.info(
-        "買賣訊號標準："
-        "▲ 轉強訊號 = DeepTrend 首次站上 60 分，或由 60 分以下重新轉強；"
-        "▼ 風險訊號 = DeepTrend 跌破 40 分，或原本已轉強後收盤跌破 5MA。"
+        "事件標記標準："
+        "▲ 轉強事件 = DeepTrend 首次站上 60 分，或由 60 分以下重新轉強；"
+        "▼ 轉弱預警 = DeepTrend 跌破 40 分，或原本已轉強後收盤跌破 5MA。"
         "訊號是風險提示，仍需搭配 K 線、籌碼與市場環境判斷。"
     )
 
@@ -1776,11 +1781,15 @@ def render_score_history(stock_df):
         st.info("分數歷史內目前沒有可選股票。")
         return
 
+    default_code = str(normalize_tw_symbol(default_stock)).split(".")[0] if default_stock else ""
+    score_labels = [label for _, label in stock_options]
+    selected_index = next((idx for idx, (code, _) in enumerate(stock_options) if str(code) == default_code), 0)
+    score_key = f"score_history_stock_{default_code}" if default_code else "score_history_stock"
     selected_label = st.selectbox(
         "選擇股票",
-        [label for _, label in stock_options],
-        index=0,
-        key="score_history_stock",
+        score_labels,
+        index=selected_index,
+        key=score_key,
     )
     selected_code = stock_options[[label for _, label in stock_options].index(selected_label)][0]
 
@@ -1870,7 +1879,7 @@ def render_score_history(stock_df):
     selected_snapshot = selected_df[selected_df["snapshot_date"].dt.strftime("%Y-%m-%d").eq(selected_date_label)].iloc[-1]
     st.caption(
         f"{selected_date_label}｜狀態：{selected_snapshot.get('狀態程度', '資料不足')}｜"
-        f"{selected_snapshot.get('買賣訊號', '') or '無明確轉強/風險訊號'}"
+        f"{selected_snapshot.get('買賣訊號', '') or '無明確轉強事件/轉弱預警'}"
     )
 
     breakdown_df = score_point_rows(selected_snapshot)
@@ -2372,7 +2381,7 @@ def format_factor_event_detail(events_df):
     return recent_events
 
 
-def render_factor_lead_analysis(stock_df):
+def render_factor_lead_analysis(stock_df, default_stock=None):
     """Render factor-leading analysis based on the saved factor event database."""
     st.subheader("📢 因子領先分析")
     st.caption("選擇單一股票，觀察技術、籌碼、量價誰先轉弱，以及事件後股價是否真的下跌。")
@@ -2411,10 +2420,15 @@ def render_factor_lead_analysis(stock_df):
         st.info("目前沒有可選擇的股票事件。")
         return
 
+    default_code = str(normalize_tw_symbol(default_stock)).split(".")[0] if default_stock else ""
+    selected_index = stock_options.index(default_code) if default_code in stock_options else 0
+    factor_key = f"factor_lead_stock_{default_code}" if default_code else "factor_lead_stock"
     selected_stock = st.selectbox(
         "選擇股票",
         stock_options,
+        index=selected_index,
         format_func=lambda code: stock_label_map.get(code, code),
+        key=factor_key,
     )
 
     stock_events = factor_df[factor_df["stock_id"].astype(str).eq(str(selected_stock))].copy()
@@ -3038,13 +3052,262 @@ def render_detail(filtered_df):
         else:
             latest_score = selected_score_history.iloc[-1].get("DeepTrend分數", pd.NA)
             latest_status = selected_score_history.iloc[-1].get("狀態程度", "資料不足")
-            latest_signal = selected_score_history.iloc[-1].get("買賣訊號", "") or "無明確轉強/風險訊號"
+            latest_signal = selected_score_history.iloc[-1].get("買賣訊號", "") or "無明確轉強事件/轉弱預警"
             st.caption(
                 f"最近 {chart_history['snapshot_date'].nunique()} 筆快照｜"
                 f"最新 DeepTrend：{format_number(latest_score, 1)}｜"
                 f"階段：{latest_status}｜{latest_signal}"
             )
             st.plotly_chart(score_fig, use_container_width=True)
+
+
+def deeptrend_bucket_info(score):
+    """Return the human-readable DT interval used by the diagnosis overview."""
+    numeric_score = pd.to_numeric(score, errors="coerce")
+    if pd.isna(numeric_score):
+        return "\u8cc7\u6599\u4e0d\u8db3", "\u8cc7\u6599\u4e0d\u8db3", None, None
+    buckets = [
+        (None, 20, "DT < 20", "\u907f\u958b\u5340"),
+        (20, 40, "DT 20\uff5e40", "\u4f4e\u6a94\u89c0\u5bdf\u5340"),
+        (40, 60, "DT 40\uff5e60", "\u8f49\u5f37\u89c0\u5bdf\u5340"),
+        (60, 80, "DT 60\uff5e80", "\u8da8\u52e2\u5ef6\u7e8c\u5340"),
+        (80, None, "DT 80+", "\u5f37\u52e2/\u904e\u71b1\u5340"),
+    ]
+    for lower, upper, label, reading in buckets:
+        lower_ok = lower is None or numeric_score >= lower
+        upper_ok = upper is None or numeric_score < upper
+        if lower_ok and upper_ok:
+            return label, reading, lower, upper
+    return "\u8cc7\u6599\u4e0d\u8db3", "\u8cc7\u6599\u4e0d\u8db3", None, None
+
+
+def confidence_by_sample(sample_count):
+    """Classify diagnostic confidence so percentages do not hide tiny samples."""
+    if sample_count < 5:
+        return "\u4f4e"
+    if sample_count < 20:
+        return "\u4e2d\u7b49"
+    return "\u8f03\u9ad8"
+
+
+def diagnosis_history_stats(stock_code):
+    """Summarize current DT interval life from saved score snapshots."""
+    history_df = load_score_history_data()
+    selected_history = prepare_single_stock_score_history(history_df, stock_code)
+    score_col = "\u0044\u0065\u0065\u0070\u0054\u0072\u0065\u006e\u0064\u5206\u6578"
+    if selected_history.empty or score_col not in selected_history.columns:
+        return {}
+    selected_history = selected_history.copy().sort_values("snapshot_date")
+    selected_history[score_col] = pd.to_numeric(selected_history[score_col], errors="coerce")
+    selected_history = selected_history.dropna(subset=[score_col])
+    if selected_history.empty:
+        return {}
+    selected_history["dt_bucket"] = selected_history[score_col].map(lambda value: deeptrend_bucket_info(value)[0])
+    current_bucket = selected_history.iloc[-1]["dt_bucket"]
+    streak = 0
+    for _, row in selected_history.iloc[::-1].iterrows():
+        if row["dt_bucket"] == current_bucket:
+            streak += 1
+        else:
+            break
+    runs = []
+    active_bucket = None
+    active_length = 0
+    for _, row in selected_history.iterrows():
+        row_bucket = row["dt_bucket"]
+        if row_bucket != active_bucket:
+            if active_bucket is not None:
+                runs.append({"bucket": active_bucket, "length": active_length})
+            active_bucket = row_bucket
+            active_length = 1
+        else:
+            active_length += 1
+    if active_bucket is not None:
+        runs.append({"bucket": active_bucket, "length": active_length})
+    runs_df = pd.DataFrame(runs)
+    same_runs = runs_df[runs_df["bucket"].eq(current_bucket)] if not runs_df.empty else pd.DataFrame()
+    median_stay = same_runs["length"].median() if not same_runs.empty else pd.NA
+    max_stay = same_runs["length"].max() if not same_runs.empty else pd.NA
+    progress = (streak / median_stay * 100) if pd.notna(median_stay) and median_stay else pd.NA
+    start_index = len(selected_history) - streak
+    previous_score = selected_history.iloc[start_index - 1][score_col] if start_index > 0 else pd.NA
+    current_score = selected_history.iloc[-1][score_col]
+    _, _, lower, upper = deeptrend_bucket_info(current_score)
+    if pd.isna(previous_score):
+        entry_direction = "\u8cc7\u6599\u7d2f\u7a4d\u4e2d"
+    elif lower is not None and previous_score < lower:
+        entry_direction = "\u4e0a\u5347\u9032\u5165"
+    elif upper is not None and previous_score >= upper:
+        entry_direction = "\u4e0b\u964d\u9032\u5165"
+    else:
+        entry_direction = "\u5340\u9593\u5ef6\u7e8c"
+    factor_columns = {"\u6280\u8853\u9762": "\u6280\u8853\u9762\u5206\u6578", "\u7c4c\u78bc\u9762": "\u7c4c\u78bc\u5206\u6578", "\u91cf\u50f9\u9762": "\u91cf\u50f9\u5206\u6578"}
+    impact_rows = []
+    total_abs_change = 0
+    for factor, column in factor_columns.items():
+        if column not in selected_history.columns:
+            continue
+        abs_change = pd.to_numeric(selected_history[column], errors="coerce").diff().abs().sum()
+        total_abs_change += abs_change
+        impact_rows.append({"factor": factor, "abs_change": abs_change})
+    for row in impact_rows:
+        row["ratio"] = (row["abs_change"] / total_abs_change * 100) if total_abs_change else pd.NA
+    impact_df = pd.DataFrame(impact_rows).sort_values("ratio", ascending=False) if impact_rows else pd.DataFrame()
+    return {"history": selected_history, "current_streak": streak, "median_stay": median_stay, "max_stay": max_stay, "progress": progress, "entry_direction": entry_direction, "impact_df": impact_df}
+
+
+def diagnosis_warning_factor(stock_code):
+    """Find the best downside-warning factor from existing factor event history."""
+    factor_df = load_factor_lead_history()
+    if factor_df.empty or "stock_id" not in factor_df.columns:
+        return None
+    code = str(stock_code).split(".")[0]
+    stock_events = factor_df[factor_df["stock_id"].astype(str).eq(code)].copy()
+    if stock_events.empty:
+        return None
+    summary_df = summarize_factor_lead_history(stock_events)
+    hit_col = "\u4e0b\u8dcc\u8b66\u5831\u547d\u4e2d\u7387"
+    count_col = "\u4e8b\u4ef6\u6578"
+    factor_col = "\u9818\u5148\u56e0\u5b50"
+    if summary_df.empty or hit_col not in summary_df.columns:
+        return None
+    summary_df = summary_df.copy()
+    summary_df[hit_col] = pd.to_numeric(summary_df[hit_col], errors="coerce")
+    summary_df[count_col] = pd.to_numeric(summary_df.get(count_col), errors="coerce").fillna(0)
+    summary_df = summary_df.dropna(subset=[hit_col])
+    if summary_df.empty:
+        return None
+    best = summary_df.sort_values([hit_col, count_col], ascending=[False, False]).iloc[0]
+    sample_count = int(best.get(count_col, 0))
+    return {"factor": best.get(factor_col, "\u8cc7\u6599\u4e0d\u8db3"), "hit_rate": best.get(hit_col, pd.NA), "sample_count": sample_count, "confidence": confidence_by_sample(sample_count)}
+
+
+def render_diagnosis_overview(selected_row, selected_stock):
+    """Render a concise first-page diagnosis without large research tables."""
+    stock_name = selected_row.get("\u80a1\u7968\u540d\u7a31", "")
+    score = selected_row.get("\u0044\u0065\u0065\u0070\u0054\u0072\u0065\u006e\u0064\u5206\u6578", selected_row.get("\u6280\u8853\u5206\u6578", pd.NA))
+    bucket_label, bucket_reading, _, _ = deeptrend_bucket_info(score)
+    history_stats = diagnosis_history_stats(selected_stock)
+    warning_factor = diagnosis_warning_factor(selected_stock)
+    diagnosis = selected_row.get("\u7d9c\u5408\u5224\u65b7", "\u89c0\u5bdf")
+    status = selected_row.get("\u72c0\u614b", "\u8cc7\u6599\u4e0d\u8db3")
+    if pd.notna(score) and score >= 80:
+        headline = "\u5f37\u52e2\u4f46\u7559\u610f\u904e\u71b1"
+    elif pd.notna(score) and score >= 60:
+        headline = "\u8f49\u5f37\u89c0\u5bdf"
+    elif pd.notna(score) and score >= 40:
+        headline = "\u7b49\u5f85\u78ba\u8a8d"
+    elif pd.notna(score) and score >= 20:
+        headline = "\u504f\u5f31\u89c0\u5bdf"
+    else:
+        headline = "\u98a8\u96aa\u504f\u9ad8"
+    st.markdown(f"### {selected_stock} {stock_name}")
+    st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5c{bucket_label}\uff08{bucket_reading}\uff09\uff5c{diagnosis}")
+    if history_stats:
+        current_streak = history_stats.get("current_streak", 0)
+        median_stay = history_stats.get("median_stay", pd.NA)
+        progress = history_stats.get("progress", pd.NA)
+        max_stay = history_stats.get("max_stay", pd.NA)
+        entry_direction = history_stats.get("entry_direction", "\u8cc7\u6599\u7d2f\u7a4d\u4e2d")
+        progress_text = f"\u7d04 {progress:.0f}%" if pd.notna(progress) else "\u8cc7\u6599\u4e0d\u8db3"
+        median_text = f"{median_stay:.0f}\u65e5" if pd.notna(median_stay) else "\u8cc7\u6599\u4e0d\u8db3"
+        max_text = f"{max_stay:.0f}\u65e5" if pd.notna(max_stay) else "\u8cc7\u6599\u4e0d\u8db3"
+    else:
+        current_streak = 0
+        median_text = "\u8cc7\u6599\u4e0d\u8db3"
+        progress_text = "\u8cc7\u6599\u4e0d\u8db3"
+        max_text = "\u8cc7\u6599\u4e0d\u8db3"
+        entry_direction = "\u8cc7\u6599\u7d2f\u7a4d\u4e2d"
+
+    impact_df = history_stats.get("impact_df", pd.DataFrame()) if history_stats else pd.DataFrame()
+    if not impact_df.empty and pd.notna(impact_df.iloc[0].get("ratio")):
+        top_impact = impact_df.iloc[0]
+        impact_label = str(top_impact["factor"])
+        impact_value = f"{top_impact['ratio']:.1f}%"
+        impact_sample = max(len(history_stats.get("history", [])) - 1, 0)
+        impact_note = f"\u6a23\u672c {impact_sample}\u6b21\uff5c{confidence_by_sample(impact_sample)}"
+    else:
+        impact_label = "\u8cc7\u6599\u7d2f\u7a4d\u4e2d"
+        impact_value = "-"
+        impact_sample = 0
+        impact_note = "\u6a23\u672c\u4e0d\u8db3"
+
+    if warning_factor:
+        warning_label = str(warning_factor["factor"])
+        warning_value = f"{warning_factor['hit_rate']:.0f}%"
+        warning_note = f"\u6a23\u672c {warning_factor['sample_count']}\u6b21\uff5c{warning_factor['confidence']}"
+    else:
+        warning_label = "\u8cc7\u6599\u7d2f\u7a4d\u4e2d"
+        warning_value = "-"
+        warning_note = "\u6a23\u672c\u4e0d\u8db3"
+
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("\u76ee\u524d DT", format_number(score, 1), headline)
+    summary_cols[1].metric("\u9032\u5834\u5340\u9593", bucket_label, bucket_reading)
+    summary_cols[2].metric("\u5340\u9593\u58fd\u547d", f"{current_streak}\u65e5 / {median_text}", progress_text)
+    summary_cols[3].metric("\u4e3b\u8981\u5f71\u97ff", impact_label, impact_value)
+
+    st.markdown(
+        f"""
+        <div style="padding:14px 16px;border:1px solid #2f3542;border-radius:8px;background:#111827;margin-top:12px;">
+            <div style="font-weight:800;color:#ffffff;margin-bottom:8px;">\u8a3a\u65b7\u91cd\u9ede</div>
+            <div style="color:#d1d5db;line-height:1.8;">
+                \u2022 \u76ee\u524d\u72c0\u614b\uff1a{status}\uff0c\u7d9c\u5408\u5224\u65b7\uff1a{diagnosis}<br>
+                \u2022 \u5340\u9593\u9032\u5ea6\uff1a{progress_text}\uff0c\u9032\u5165\u65b9\u5411\uff1a{entry_direction}<br>
+                \u2022 \u6700\u6709\u6548\u9810\u8b66\u56e0\u5b50\uff1a{warning_label}\uff0c5\u65e5\u4e0b\u8dcc\u547d\u4e2d\u7387\uff1a{warning_value}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("\u67e5\u770b\u8a3a\u65b7\u4f9d\u64da"):
+        detail_cols = st.columns(2)
+        with detail_cols[0]:
+            st.markdown("**\u5340\u9593\u58fd\u547d**")
+            st.write(f"\u76ee\u524d\u5df2\u505c\u7559\uff1a{current_streak}\u65e5")
+            st.write(f"\u6b77\u53f2\u4e2d\u4f4d\u6578\uff1a{median_text}")
+            st.write(f"\u6b77\u53f2\u6700\u9577\uff1a{max_text}")
+            st.write(f"\u9032\u5165\u65b9\u5411\uff1a{entry_direction}")
+        with detail_cols[1]:
+            st.markdown("**\u5f71\u97ff\u8207\u9810\u8b66**")
+            st.write(f"\u4e3b\u8981\u5206\u6578\u5f71\u97ff\uff1a{impact_label} {impact_value}")
+            st.write(f"\u5f71\u97ff\u6a23\u672c\uff1a{impact_note}")
+            st.write(f"\u6700\u6709\u6548\u9810\u8b66\uff1a{warning_label} {warning_value}")
+            st.write(f"\u9810\u8b66\u6a23\u672c\uff1a{warning_note}")
+
+
+def render_stock_diagnosis(stock_df):
+    """Integrate existing single-stock pages into one stock diagnosis workspace."""
+    st.subheader("\U0001f4cb \u80a1\u7968\u8a3a\u65b7\u66f8")
+    st.caption("\u5148\u7d66\u7d50\u8ad6\uff0c\u518d\u770b K \u7dda\u3001\u5206\u6578\u3001\u56e0\u5b50\u8207\u7c4c\u78bc\u7d30\u7bc0\u3002")
+    if stock_df.empty or not {"\u80a1\u7968\u4ee3\u865f", "\u80a1\u7968\u540d\u7a31"}.issubset(stock_df.columns):
+        st.info("\u76ee\u524d\u6c92\u6709\u53ef\u8a3a\u65b7\u7684\u80a1\u7968\u8cc7\u6599\u3002")
+        return
+    stock_options = stock_df["\u80a1\u7968\u4ee3\u865f"].dropna().astype(str).tolist()
+    preferred_stock = str(st.session_state.pop("pending_detail_stock", ""))
+    current_stock = str(st.session_state.get("diagnosis_stock", ""))
+    if preferred_stock in stock_options:
+        st.session_state["diagnosis_stock"] = preferred_stock
+    elif current_stock not in stock_options:
+        st.session_state["diagnosis_stock"] = stock_options[0]
+    selected_stock = st.selectbox("\u9078\u64c7\u80a1\u7968", stock_options, format_func=build_stock_label_map(stock_df).get, key="diagnosis_stock")
+    st.session_state["detail_stock"] = selected_stock
+    selected_df = stock_df[stock_df["\u80a1\u7968\u4ee3\u865f"].astype(str).eq(str(selected_stock))].copy()
+    selected_row = selected_df.iloc[0]
+    overview_tab, kline_tab, score_tab, factor_tab, chip_tab, data_tab = st.tabs(["\u7e3d\u89bd\u8a3a\u65b7", "K\u7dda\u5716", "\u5206\u6578\u6b77\u53f2", "\u56e0\u5b50\u5206\u6790", "\u7c4c\u78bc\u67e5\u5e33", "\u5b8c\u6574\u8cc7\u6599"])
+    with overview_tab:
+        render_diagnosis_overview(selected_row, selected_stock)
+    with kline_tab:
+        render_detail(selected_df)
+    with score_tab:
+        render_score_history(stock_df, default_stock=selected_stock)
+    with factor_tab:
+        render_factor_lead_analysis(stock_df, default_stock=selected_stock)
+    with chip_tab:
+        render_chip_audit(stock_df, default_stock=selected_stock)
+    with data_tab:
+        st.dataframe(selected_df.copy(), use_container_width=True, hide_index=True)
 
 
 def run_ma_backtest(history, holding_days=5, volume_multiplier=1.5):
@@ -4934,13 +5197,9 @@ if keyword:
 
 view_options = [
     "📊 股票雷達",
-    "📈 分數歷史",
-    "✅ 分數驗證",
-    "📢 因子領先分析",
-    "🔎 個股查詢",
+    "📋 股票診斷書",
     "🌡️ 觀察池溫度",
     "🌡️ 市場池溫度",
-    "🧾 籌碼查帳（個股）",
     "🩺 資料健康檢查",
 ]
 if "active_view" not in st.session_state or st.session_state["active_view"] not in view_options:
@@ -4956,16 +5215,8 @@ active_view = st.radio(
 
 if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
-elif active_view == "🔎 個股查詢":
-    render_detail(filtered_df)
-elif active_view == "🧾 籌碼查帳（個股）":
-    render_chip_audit(df)
-elif active_view == "📈 分數歷史":
-    render_score_history(df)
-elif active_view == "✅ 分數驗證":
-    render_score_validation(df)
-elif active_view == "📢 因子領先分析":
-    render_factor_lead_analysis(df)
+elif active_view == "📋 股票診斷書":
+    render_stock_diagnosis(df)
 elif active_view == "🩺 資料健康檢查":
     render_data_health(df)
 elif active_view == "🌡️ 觀察池溫度":
