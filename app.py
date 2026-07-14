@@ -1219,7 +1219,8 @@ def render_stock_radar(filtered_df):
     radar_df["雷達推薦分數"] = radar_df.apply(calculate_radar_priority, axis=1)
 
     sort_options = {
-        "優先研究": (["雷達推薦分數", "Trend Score"], [False, False]),
+        "DT Score 高到低": (["Trend Score", "分數變化"], [False, False]),
+        "DT 研究順序": (["雷達推薦分數", "Trend Score"], [False, False]),
         "技術分數高到低": (["技術分數", "乖離率"], [False, False]),
         "今日漲跌幅高到低": (["今日漲跌幅", "技術分數"], [False, False]),
         "乖離率高到低": (["乖離率", "技術分數"], [False, False]),
@@ -1239,10 +1240,10 @@ def render_stock_radar(filtered_df):
         score_change_text = format_signed_number(score_change, 1) if pd.notna(score_change) else "資料不足"
         etf_value_score = row.get("ETF Value Score", pd.NA)
         etf_judgement = row.get("ETF布局判讀", "")
-        etf_block = ""
+        etf_block = '<div style="height:42px;margin-top:12px;"></div>'
         if asset_type == "ETF":
             etf_block = f"""
-                <div style="margin-top:12px;padding:10px;border-radius:8px;background:#0f172a;color:#d1d5db;font-size:13px;">
+                <div style="height:42px;margin-top:12px;padding:9px 10px;border-radius:8px;background:#0f172a;color:#d1d5db;font-size:13px;box-sizing:border-box;overflow:hidden;">
                     ETF Value Score：<b style="color:#38bdf8;">{format_number(etf_value_score, 1)}</b>｜{etf_judgement}
                 </div>
             """
@@ -1250,7 +1251,7 @@ def render_stock_radar(filtered_df):
         html = dedent(
             f"""
             <div style="
-                min-height:150px;
+                height:190px;
                 padding:18px;
                 margin-bottom:14px;
                 border:1px solid #2f3542;
@@ -1266,7 +1267,7 @@ def render_stock_radar(filtered_df):
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px;">
                     <div>
-                        <div style="font-size:12px;color:#9ca3af;">Trend Score</div>
+                        <div style="font-size:12px;color:#9ca3af;">DT Score</div>
                         <div style="font-size:30px;font-weight:900;color:#ffffff;line-height:1.1;">{trend_score}</div>
                     </div>
                     <div>
