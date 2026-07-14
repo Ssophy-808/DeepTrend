@@ -45,12 +45,11 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from textwrap import dedent
 from urllib.parse import quote_plus
-from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
 import pandas as pd
@@ -71,7 +70,7 @@ CHIP_DAILY_FILE = BASE_DIR / "output" / "chip_daily.csv"
 GROUP_FILE = BASE_DIR / "groups.csv"
 GROUP_HEAT_HISTORY_FILE = BASE_DIR / "output" / "group_heat_history.csv"
 BACKTEST_RECORD_DIR = BASE_DIR / "backtest_records"
-TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+TAIPEI_TZ = timezone(timedelta(hours=8))
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
