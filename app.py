@@ -438,6 +438,16 @@ def format_signed_pct(value):
         return value
 
 
+def format_signed_number(value, decimals=1):
+    """Format score changes as signed numbers, e.g. +3.0 or -2.5."""
+    if pd.isna(value):
+        return ""
+    try:
+        return f"{float(value):+,.{decimals}f}"
+    except (TypeError, ValueError):
+        return value
+
+
 def value_color(value):
     """Choose the app's red/green/neutral color for positive, negative, or zero values."""
     try:
@@ -1154,6 +1164,48 @@ def open_stock_detail(stock_code):
     st.session_state["active_view"] = "📋 股票診斷書"
 
 
+def calculate_radar_priority(row):
+    """Score radar cards by fresh opportunity, not just absolute score."""
+    asset_type = row.get("資產類型", "個股")
+    trend_score = pd.to_numeric(row.get("Trend Score", row.get("DeepTrend分數", row.get("技術分數"))), errors="coerce")
+    score_change = pd.to_numeric(row.get("分數變化", 0), errors="coerce")
+    volume_ratio = pd.to_numeric(row.get("量比", pd.NA), errors="coerce")
+    score = 0
+
+    if pd.notna(trend_score):
+        score += min(max(trend_score, 0), 100) * 0.35
+        if asset_type != "ETF" and trend_score >= 40:
+            score += 12
+    if pd.notna(score_change):
+        if score_change > 0:
+            score += 10
+        if score_change >= 10:
+            score += 10
+        if score_change >= 20:
+            score += 10
+        if pd.notna(trend_score) and trend_score >= 70 and score_change <= 2:
+            score -= 8
+
+    technical_text = str(row.get("技術面", ""))
+    chip_text = str(row.get("籌碼面", ""))
+    if "多頭排列" in technical_text:
+        score += 10
+    if "接近20日高" in technical_text:
+        score += 8
+    if "突破20日高" in technical_text:
+        score += 12
+    if "成交量放大" in technical_text or (pd.notna(volume_ratio) and volume_ratio >= 1.5):
+        score += 8
+    if "買超" in chip_text or "法人" in chip_text:
+        score += 8
+
+    if asset_type == "ETF":
+        etf_score = pd.to_numeric(row.get("ETF Value Score"), errors="coerce")
+        if pd.notna(etf_score):
+            score = 100 - etf_score + (trend_score * 0.15 if pd.notna(trend_score) else 0)
+    return round(score, 2)
+
+
 def render_stock_radar(filtered_df):
     """Render the primary stock radar cards. This is the main watchlist dashboard."""
     st.subheader("📊 股票雷達")
@@ -1163,7 +1215,11 @@ def render_stock_radar(filtered_df):
         st.info("目前沒有符合篩選條件的股票。")
         return
 
+    radar_df = filtered_df.copy()
+    radar_df["雷達推薦分數"] = radar_df.apply(calculate_radar_priority, axis=1)
+
     sort_options = {
+        "優先研究": (["雷達推薦分數", "Trend Score"], [False, False]),
         "技術分數高到低": (["技術分數", "乖離率"], [False, False]),
         "今日漲跌幅高到低": (["今日漲跌幅", "技術分數"], [False, False]),
         "乖離率高到低": (["乖離率", "技術分數"], [False, False]),
@@ -1171,51 +1227,30 @@ def render_stock_radar(filtered_df):
     }
     selected_sort = st.selectbox("排序方式", list(sort_options.keys()), key="radar_sort")
     sort_columns, sort_ascending = sort_options[selected_sort]
-    card_df = filtered_df.sort_values(sort_columns, ascending=sort_ascending, na_position="last")
+    card_df = radar_df.sort_values(sort_columns, ascending=sort_ascending, na_position="last")
     columns = st.columns(3)
 
     for index, (_, row) in enumerate(card_df.iterrows()):
-        change = row.get("今日漲跌幅", pd.NA)
-        bias = row.get("乖離率", pd.NA)
-        change_color = value_color(change)
-        bias_color = value_color(bias)
-        score = format_number(row.get("技術分數"), 0)
         status = row.get("狀態", "")
-        judgement = row.get("綜合判斷", "")
-        time_text = row.get("資料時間", "")
-        volume_price_signal = row.get("量價異常", "無明顯異常")
-        ma_pattern = row.get("均線型態", "中性")
-        breakout_alert = row.get("突破警報", "無")
-        signal_text = breakout_alert if str(breakout_alert) != "無" else volume_price_signal
-        signal_color = "#facc15" if str(signal_text) != "無明顯異常" and str(signal_text) != "無" else "#9ca3af"
-        foreign_5d = row.get("外資5日", pd.NA)
-        investment_5d = row.get("投信5日", pd.NA)
-        foreign_color = value_color(foreign_5d)
-        investment_color = value_color(investment_5d)
         asset_type = row.get("資產類型", "個股")
         trend_score = format_number(row.get("Trend Score"), 0)
+        score_change = pd.to_numeric(row.get("分數變化", pd.NA), errors="coerce")
+        change_color = value_color(score_change)
+        score_change_text = format_signed_number(score_change, 1) if pd.notna(score_change) else "資料不足"
         etf_value_score = row.get("ETF Value Score", pd.NA)
         etf_judgement = row.get("ETF布局判讀", "")
         etf_block = ""
         if asset_type == "ETF":
             etf_block = f"""
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
-                    <div>
-                        <div style="font-size:12px;color:#9ca3af;">Trend Score</div>
-                        <div style="font-size:18px;font-weight:800;color:#ffffff;">{trend_score}</div>
-                    </div>
-                    <div>
-                        <div style="font-size:12px;color:#9ca3af;">ETF Value Score</div>
-                        <div style="font-size:18px;font-weight:800;color:#38bdf8;">{format_number(etf_value_score, 1)}</div>
-                    </div>
-                    <div style="grid-column:1 / -1;font-size:13px;color:#d1d5db;">ETF判讀：{etf_judgement}</div>
+                <div style="margin-top:12px;padding:10px;border-radius:8px;background:#0f172a;color:#d1d5db;font-size:13px;">
+                    ETF Value Score：<b style="color:#38bdf8;">{format_number(etf_value_score, 1)}</b>｜{etf_judgement}
                 </div>
             """
 
         html = dedent(
             f"""
             <div style="
-                min-height:210px;
+                min-height:150px;
                 padding:18px;
                 margin-bottom:14px;
                 border:1px solid #2f3542;
@@ -1225,42 +1260,21 @@ def render_stock_radar(filtered_df):
                 <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
                     <div>
                         <div style="font-size:22px;font-weight:800;color:#ffffff;line-height:1.2;">{row["股票名稱"]}</div>
-                        <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {asset_type} · {time_text}</div>
+                        <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {asset_type}</div>
                     </div>
-                    <div style="font-size:18px;font-weight:800;color:#ffffff;white-space:nowrap;">{score}</div>
+                    <div style="font-size:13px;font-weight:800;color:#9ca3af;white-space:nowrap;">{status}</div>
                 </div>
-                <div style="margin-top:14px;font-size:14px;color:#d1d5db;">{status}　{judgement}</div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
-                    <div style="font-size:13px;font-weight:700;color:#d1d5db;">{ma_pattern}</div>
-                    <div style="font-size:13px;font-weight:700;color:{signal_color};">{signal_text}</div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
-                    <div style="font-size:13px;color:#d1d5db;">外資5日 <span style="font-weight:800;color:{foreign_color};">{format_integer(foreign_5d)}</span></div>
-                    <div style="font-size:13px;color:#d1d5db;">投信5日 <span style="font-weight:800;color:{investment_color};">{format_integer(investment_5d)}</span></div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:18px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px;">
                     <div>
-                        <div style="font-size:12px;color:#9ca3af;">收盤價</div>
-                        <div style="font-size:19px;font-weight:800;color:#ffffff;">{format_number(row.get("收盤價"))}</div>
+                        <div style="font-size:12px;color:#9ca3af;">Trend Score</div>
+                        <div style="font-size:30px;font-weight:900;color:#ffffff;line-height:1.1;">{trend_score}</div>
                     </div>
                     <div>
-                        <div style="font-size:12px;color:#9ca3af;">今日漲跌幅</div>
-                        <div style="font-size:19px;font-weight:800;color:{change_color};">{format_signed_pct(change)}</div>
-                    </div>
-                    <div>
-                        <div style="font-size:12px;color:#9ca3af;">乖離率</div>
-                        <div style="font-size:19px;font-weight:800;color:{bias_color};">{format_signed_pct(bias)}</div>
+                        <div style="font-size:12px;color:#9ca3af;">分數變化</div>
+                        <div style="font-size:30px;font-weight:900;color:{change_color};line-height:1.1;">{score_change_text}</div>
                     </div>
                 </div>
                 {etf_block}
-                <div style="
-                    margin-top:16px;
-                    padding-top:12px;
-                    border-top:1px solid #253041;
-                    color:#9ca3af;
-                    font-size:13px;
-                    line-height:1.45;
-                ">{row.get("技術面", "")}</div>
             </div>
             """
         ).replace("\n", "")
