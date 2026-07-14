@@ -1331,6 +1331,21 @@ def chip_sum(df, column):
     return int(pd.to_numeric(df[column], errors="coerce").fillna(0).sum())
 
 
+def shares_to_lots(value):
+    """Convert TWSE/TPEx share counts into trading lots for clearer UI display."""
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return 0
+    return numeric_value / 1000
+
+
+def format_lots(value):
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return ""
+    return f"{numeric_value:,.0f}"
+
+
 def render_chip_audit(stock_df, default_stock=None):
     """Render an audit page for daily institutional chip data and interval reconciliation."""
     st.subheader("🧾 籌碼查帳（個股）")
@@ -1417,6 +1432,74 @@ def render_chip_audit(stock_df, default_stock=None):
     m3.metric("自營商買賣超", format_integer(total_dealer))
     m4.metric("三大法人買賣超", format_integer(total_all))
 
+    chart_df = selected_df.sort_values("date").copy()
+    chart_df["外資"] = chart_df.get("foreign_net", 0).fillna(0) + chart_df.get("foreign_dealer_net", 0).fillna(0)
+    chart_df["投信"] = chart_df.get("investment_net", 0).fillna(0)
+    chart_df["自營商"] = chart_df.get("dealer_net", 0).fillna(0)
+    chart_df["三大法人"] = chart_df.get("total_net", 0).fillna(0)
+    for col in ["外資", "投信", "自營商", "三大法人"]:
+        chart_df[f"{col}/張"] = chart_df[col].map(shares_to_lots)
+
+    price_history = prepare_single_stock_score_history(load_score_history_data(), selected_code)
+    price_trace = pd.DataFrame()
+    if not price_history.empty and "收盤價" in price_history.columns:
+        price_trace = price_history[["snapshot_date", "收盤價"]].dropna().copy()
+        price_trace = price_trace[
+            (price_trace["snapshot_date"].dt.date >= start_date)
+            & (price_trace["snapshot_date"].dt.date <= end_date)
+        ]
+
+    st.markdown("#### 法人買賣超與股價")
+    chip_fig = make_subplots(specs=[[{"secondary_y": True}]])
+    chip_colors = ["#ef4444" if value >= 0 else "#22c55e" for value in chart_df["三大法人/張"]]
+    chip_fig.add_trace(
+        go.Bar(
+            x=chart_df["date"],
+            y=chart_df["三大法人/張"],
+            name="三大法人買賣超（張）",
+            marker_color=chip_colors,
+        ),
+        secondary_y=False,
+    )
+    if not price_trace.empty:
+        chip_fig.add_trace(
+            go.Scatter(
+                x=price_trace["snapshot_date"],
+                y=price_trace["收盤價"],
+                mode="lines+markers",
+                name="收盤價",
+                line=dict(color="#f9fafb", width=2),
+            ),
+            secondary_y=True,
+        )
+    chip_fig.update_layout(
+        height=360,
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    chip_fig.update_yaxes(title_text="買賣超（張）", secondary_y=False)
+    chip_fig.update_yaxes(title_text="股價", secondary_y=True, showgrid=False)
+    st.plotly_chart(chip_fig, use_container_width=True)
+
+    daily_view = chart_df[["date", "外資/張", "投信/張", "自營商/張", "三大法人/張"]].sort_values("date", ascending=False).copy()
+    daily_view["date"] = daily_view["date"].dt.strftime("%Y-%m-%d")
+    daily_view = daily_view.rename(columns={"date": "日期"})
+    styled_daily = daily_view.style.format(
+        {
+            "外資/張": format_lots,
+            "投信/張": format_lots,
+            "自營商/張": format_lots,
+            "三大法人/張": format_lots,
+        }
+    ).map(
+        lambda value: "color:#ef4444;font-weight:700"
+        if pd.to_numeric(value, errors="coerce") > 0
+        else ("color:#22c55e;font-weight:700" if pd.to_numeric(value, errors="coerce") < 0 else ""),
+        subset=["外資/張", "投信/張", "自營商/張", "三大法人/張"],
+    )
+    st.markdown("#### 每日買賣超")
+    st.dataframe(styled_daily, use_container_width=True, hide_index=True)
+
     summary_rows = [
         {
             "項目": "外資(不含外資自營商)",
@@ -1465,8 +1548,8 @@ def render_chip_audit(stock_df, default_stock=None):
     for col in ["買進", "賣出", "買賣超"]:
         summary_df[col] = summary_df[col].map(lambda value: "" if value == "" else format_integer(value))
 
-    st.markdown("#### 區間加總")
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    with st.expander("查看區間加總"):
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
     display_columns = [
         "date",
@@ -1519,17 +1602,18 @@ def render_chip_audit(stock_df, default_stock=None):
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(format_integer)
 
-    st.markdown("#### 每日明細")
-    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+    with st.expander("查看原始每日明細"):
+        st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
     csv_df = selected_df.sort_values("date").copy()
     csv_df["date"] = csv_df["date"].dt.strftime("%Y-%m-%d")
-    st.download_button(
-        "下載此區間籌碼明細 CSV",
-        data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"chip_audit_{selected_code}_{start_date}_{end_date}.csv",
-        mime="text/csv",
-    )
+    with st.expander("匯出資料"):
+        st.download_button(
+            "下載此區間籌碼明細 CSV",
+            data=csv_df.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"chip_audit_{selected_code}_{start_date}_{end_date}.csv",
+            mime="text/csv",
+        )
 
 
 @st.cache_data(ttl=600)
