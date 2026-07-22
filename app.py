@@ -214,6 +214,7 @@ def get_official_daily_history(ticker, month_count=3):
                         {
                             "日期": trade_date,
                             "成交量": to_float(row[1]) * 1000,
+                            "開盤價": to_float(row[3]),
                             "最高價": to_float(row[4]),
                             "最低價": to_float(row[5]),
                             "收盤價": to_float(row[6]),
@@ -240,6 +241,7 @@ def get_official_daily_history(ticker, month_count=3):
                         {
                             "日期": trade_date,
                             "成交量": to_float(row[1]),
+                            "開盤價": to_float(row[3]),
                             "最高價": to_float(row[4]),
                             "最低價": to_float(row[5]),
                             "收盤價": to_float(row[6]),
@@ -266,6 +268,7 @@ def official_history_to_kline(history):
     k_df = k_df.rename(
         columns={
             "日期": "Date",
+            "開盤價": "Open",
             "收盤價": "Close",
             "最高價": "High",
             "最低價": "Low",
@@ -275,25 +278,37 @@ def official_history_to_kline(history):
     k_df["Date"] = pd.to_datetime(k_df["Date"])
     k_df = k_df.set_index("Date").sort_index()
 
-    for col in ["Close", "High", "Low", "Volume"]:
-        k_df[col] = pd.to_numeric(k_df[col], errors="coerce")
+    for col in ["Open", "Close", "High", "Low", "Volume"]:
+        if col in k_df.columns:
+            k_df[col] = pd.to_numeric(k_df[col], errors="coerce")
 
     k_df = k_df.dropna(subset=["High", "Low", "Close"])
+    available_columns = [col for col in ["Open", "High", "Low", "Close", "Volume"] if col in k_df.columns]
 
-    return k_df[["High", "Low", "Close", "Volume"]]
+    return k_df[available_columns]
 
 
 def build_kline_data(symbol):
     """Build K-line chart data, preferring real yfinance OHLC and falling back to official close-line data."""
     k_df = download_market_data(symbol)
+    history = get_official_daily_history(symbol)
+    official_df = official_history_to_kline(history)
+
     if not k_df.empty:
         close_series = get_series(k_df, "Close")
         if close_series.notna().sum() >= 20:
+            if not official_df.empty:
+                yfinance_latest = pd.to_datetime(k_df.index, errors="coerce").max()
+                official_latest = pd.to_datetime(official_df.index, errors="coerce").max()
+                if pd.notna(yfinance_latest) and pd.notna(official_latest) and official_latest > yfinance_latest:
+                    if "Open" in official_df.columns and official_df["Open"].notna().any():
+                        return official_df, "candlestick", "official OHLC"
+                    return official_df, "close_line", "official close-line"
             return k_df, "candlestick", "yfinance OHLC"
 
-    history = get_official_daily_history(symbol)
-    official_df = official_history_to_kline(history)
     if not official_df.empty:
+        if "Open" in official_df.columns and official_df["Open"].notna().any():
+            return official_df, "candlestick", "official OHLC"
         return official_df, "close_line", "official close-line"
 
     return pd.DataFrame(), "candlestick", ""
