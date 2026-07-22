@@ -289,26 +289,25 @@ def official_history_to_kline(history):
 
 
 def build_kline_data(symbol):
-    """Build K-line chart data, preferring real yfinance OHLC and falling back to official close-line data."""
+    """Build K-line chart data, preferring official TWSE/TPEX OHLC and falling back to yfinance."""
     k_df = download_market_data(symbol)
     history = get_official_daily_history(symbol)
     official_df = official_history_to_kline(history)
 
+    if (
+        not official_df.empty
+        and "Open" in official_df.columns
+        and official_df["Open"].notna().any()
+        and official_df["Close"].notna().sum() >= 20
+    ):
+        return official_df, "candlestick", "official OHLC"
+
     if not k_df.empty:
         close_series = get_series(k_df, "Close")
         if close_series.notna().sum() >= 20:
-            if not official_df.empty:
-                yfinance_latest = pd.to_datetime(k_df.index, errors="coerce").max()
-                official_latest = pd.to_datetime(official_df.index, errors="coerce").max()
-                if pd.notna(yfinance_latest) and pd.notna(official_latest) and official_latest > yfinance_latest:
-                    if "Open" in official_df.columns and official_df["Open"].notna().any():
-                        return official_df, "candlestick", "official OHLC"
-                    return official_df, "close_line", "official close-line"
             return k_df, "candlestick", "yfinance OHLC"
 
     if not official_df.empty:
-        if "Open" in official_df.columns and official_df["Open"].notna().any():
-            return official_df, "candlestick", "official OHLC"
         return official_df, "close_line", "official close-line"
 
     return pd.DataFrame(), "candlestick", ""
