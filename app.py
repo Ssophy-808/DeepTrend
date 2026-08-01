@@ -1220,16 +1220,130 @@ def calculate_radar_priority(row):
     return round(score, 2)
 
 
+def build_deeptrend_candidate_df(universe_df, limit=30, exclude_codes=None):
+    """Build market-pool candidates ranked by fresh DeepTrend opportunity signals."""
+    if universe_df.empty:
+        return pd.DataFrame()
+
+    candidate_df = universe_df.copy()
+    for column in ["DeepTrend分數", "分數變化率", "分數變化", "技術面分數", "籌碼分數", "量價分數"]:
+        if column in candidate_df.columns:
+            candidate_df[column] = pd.to_numeric(candidate_df[column], errors="coerce")
+
+    def candidate_number(column):
+        if column not in candidate_df.columns:
+            return pd.Series(0, index=candidate_df.index)
+        return pd.to_numeric(candidate_df[column], errors="coerce").fillna(0)
+
+    def candidate_text(column):
+        if column not in candidate_df.columns:
+            return pd.Series("", index=candidate_df.index)
+        return candidate_df[column].fillna("").astype(str)
+
+    text_source = (
+        candidate_text("狀態")
+        + "｜"
+        + candidate_text("綜合判斷")
+        + "｜"
+        + candidate_text("技術面")
+        + "｜"
+        + candidate_text("籌碼面")
+    )
+    deeptrend_score = candidate_number("DeepTrend分數")
+    score_change = candidate_number("分數變化")
+    volume_price_score = candidate_number("量價分數")
+
+    candidate_df["分數達標"] = deeptrend_score >= 40
+    candidate_df["分數上升"] = score_change > 0
+    candidate_df["明顯升溫"] = score_change >= 10
+    candidate_df["快速升溫"] = score_change >= 20
+    candidate_df["接近20日高"] = text_source.str.contains("接近20日高", na=False)
+    candidate_df["突破20日高"] = text_source.str.contains("突破20日高|帶量突破20日高", na=False)
+    candidate_df["成交量放大"] = text_source.str.contains("爆量|成交量放大|量能溫和放大|量能", na=False)
+    candidate_df["多頭排列"] = text_source.str.contains("多頭排列", na=False)
+    candidate_df["轉強訊號"] = text_source.str.contains("轉強|強勢|偏多", na=False)
+    candidate_df["高分鈍化"] = (deeptrend_score >= 60) & (score_change <= 2)
+
+    candidate_df["候選分數"] = (
+        candidate_df["分數達標"].astype(int) * 20
+        + candidate_df["分數上升"].astype(int) * 20
+        + candidate_df["明顯升溫"].astype(int) * 15
+        + candidate_df["快速升溫"].astype(int) * 20
+        + candidate_df["接近20日高"].astype(int) * 10
+        + candidate_df["突破20日高"].astype(int) * 20
+        + candidate_df["成交量放大"].astype(int) * 15
+        + candidate_df["多頭排列"].astype(int) * 10
+        + candidate_df["轉強訊號"].astype(int) * 10
+        + deeptrend_score.clip(lower=0) * 0.08
+        + volume_price_score.clip(lower=0) * 0.08
+        - candidate_df["高分鈍化"].astype(int) * 15
+    )
+
+    def candidate_reason(row):
+        reasons = []
+        if row.get("快速升溫"):
+            reasons.append("快速升溫")
+        elif row.get("明顯升溫"):
+            reasons.append("分數明顯上升")
+        elif row.get("分數上升"):
+            reasons.append("分數上升")
+        if row.get("突破20日高"):
+            reasons.append("突破20日高")
+        elif row.get("接近20日高"):
+            reasons.append("接近20日高")
+        if row.get("成交量放大"):
+            reasons.append("成交量放大")
+        if row.get("多頭排列"):
+            reasons.append("多頭排列")
+        if row.get("轉強訊號"):
+            reasons.append("轉強訊號")
+        if row.get("高分鈍化"):
+            reasons.append("高分但升溫放緩")
+        return "、".join(reasons) if reasons else "分數達標"
+
+    candidate_df["候選理由"] = candidate_df.apply(candidate_reason, axis=1)
+    if "資產類型" in candidate_df.columns:
+        candidate_df = candidate_df[candidate_df["資產類型"].ne("ETF")].copy()
+    if "股票代號" in candidate_df.columns and exclude_codes:
+        excluded = {stock_code_key(code) for code in exclude_codes}
+        candidate_df = candidate_df[~candidate_df["股票代號"].map(stock_code_key).isin(excluded)].copy()
+
+    candidate_df = candidate_df[candidate_df["分數達標"]].copy()
+    return candidate_df.sort_values(["候選分數", "DeepTrend分數"], ascending=[False, False]).head(limit)
+
+
+def add_market_candidates_to_stock_df(stock_df, limit=3):
+    """Append top market-pool candidates to a stock list without changing the saved watchlist."""
+    if stock_df.empty:
+        return stock_df.copy()
+
+    combined_df = stock_df.copy()
+    combined_df["雷達來源"] = "觀察池"
+    exclude_codes = combined_df["股票代號"].astype(str).tolist() if "股票代號" in combined_df.columns else []
+    candidate_df = build_deeptrend_candidate_df(load_universe_result(), limit=limit, exclude_codes=exclude_codes)
+    if candidate_df.empty:
+        return combined_df
+
+    candidate_df = candidate_df.copy()
+    candidate_df["雷達來源"] = "市場池潛力股"
+    return pd.concat([combined_df, candidate_df], ignore_index=True, sort=False)
+
+
 def render_stock_radar(filtered_df):
     """Render the primary stock radar cards. This is the main watchlist dashboard."""
     st.subheader("📊 股票雷達")
-    st.caption(f"目前顯示 {len(filtered_df)} 檔股票")
 
     if filtered_df.empty:
         st.info("目前沒有符合篩選條件的股票。")
         return
 
-    radar_df = filtered_df.copy()
+    radar_df = add_market_candidates_to_stock_df(filtered_df, limit=3)
+    candidate_count = int(radar_df["雷達來源"].eq("市場池潛力股").sum()) if "雷達來源" in radar_df.columns else 0
+    caption = f"目前顯示 {len(filtered_df)} 檔觀察池股票"
+    if candidate_count:
+        caption += f"｜另加入市場池潛力股 {candidate_count} 檔"
+    st.caption(caption)
+
     radar_df["雷達推薦分數"] = radar_df.apply(calculate_radar_priority, axis=1)
 
     sort_options = {
@@ -1248,12 +1362,14 @@ def render_stock_radar(filtered_df):
     for index, (_, row) in enumerate(card_df.iterrows()):
         status = row.get("狀態", "")
         asset_type = row.get("資產類型", "個股")
+        source_label = row.get("雷達來源", "觀察池")
         trend_score = format_number(row.get("Trend Score"), 0)
         score_change = pd.to_numeric(row.get("分數變化", pd.NA), errors="coerce")
         change_color = value_color(score_change)
         score_change_text = format_signed_number(score_change, 1) if pd.notna(score_change) else "資料不足"
         etf_value_score = row.get("ETF Value Score", pd.NA)
         etf_judgement = row.get("ETF布局判讀", "")
+        source_badge = "⭐ 潛力股" if source_label == "市場池潛力股" else ""
         etf_block = '<div style="height:42px;margin-top:12px;"></div>'
         if asset_type == "ETF":
             etf_block = f"""
@@ -1277,7 +1393,10 @@ def render_stock_radar(filtered_df):
                         <div style="font-size:22px;font-weight:800;color:#ffffff;line-height:1.2;">{row["股票名稱"]}</div>
                         <div style="font-size:13px;color:#9ca3af;margin-top:4px;">{row["股票代號"]} · {asset_type}</div>
                     </div>
-                    <div style="font-size:13px;font-weight:800;color:#9ca3af;white-space:nowrap;">{status}</div>
+                    <div style="font-size:13px;font-weight:800;color:#9ca3af;white-space:nowrap;text-align:right;">
+                        <div>{status}</div>
+                        <div style="color:#facc15;margin-top:4px;">{source_badge}</div>
+                    </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px;">
                     <div>
@@ -5081,91 +5200,7 @@ def render_deeptrend_candidates(universe_df, title="🔭 DeepTrend 候選股", l
         st.info("尚未產生市場池分析結果，請先執行更新流程。")
         return
 
-    candidate_df = universe_df.copy()
-    for column in ["DeepTrend分數", "分數變化率", "分數變化", "技術面分數", "籌碼分數", "量價分數"]:
-        if column in candidate_df.columns:
-            candidate_df[column] = pd.to_numeric(candidate_df[column], errors="coerce")
-
-    def candidate_number(column):
-        if column not in candidate_df.columns:
-            return pd.Series(0, index=candidate_df.index)
-        return pd.to_numeric(candidate_df[column], errors="coerce").fillna(0)
-
-    def candidate_text(column):
-        if column not in candidate_df.columns:
-            return pd.Series("", index=candidate_df.index)
-        return candidate_df[column].fillna("").astype(str)
-
-    text_source = (
-        candidate_text("狀態")
-        + "｜"
-        + candidate_text("綜合判斷")
-        + "｜"
-        + candidate_text("技術面")
-        + "｜"
-        + candidate_text("籌碼面")
-    )
-    deeptrend_score = candidate_number("DeepTrend分數")
-    score_change = candidate_number("分數變化")
-    score_change_rate = candidate_number("分數變化率")
-    volume_price_score = candidate_number("量價分數")
-
-    candidate_df["分數達標"] = deeptrend_score >= 40
-    candidate_df["分數上升"] = score_change > 0
-    candidate_df["明顯升溫"] = score_change >= 10
-    candidate_df["快速升溫"] = score_change >= 20
-    candidate_df["接近20日高"] = text_source.str.contains("接近20日高", na=False)
-    candidate_df["突破20日高"] = text_source.str.contains("突破20日高|帶量突破20日高", na=False)
-    candidate_df["成交量放大"] = text_source.str.contains("爆量|成交量放大|量能溫和放大|量能", na=False)
-    candidate_df["多頭排列"] = text_source.str.contains("多頭排列", na=False)
-    candidate_df["轉強訊號"] = text_source.str.contains("轉強|強勢|偏多", na=False)
-    candidate_df["高分鈍化"] = (deeptrend_score >= 60) & (score_change <= 2)
-
-    candidate_df["候選分數"] = (
-        candidate_df["分數達標"].astype(int) * 20
-        + candidate_df["分數上升"].astype(int) * 20
-        + candidate_df["明顯升溫"].astype(int) * 15
-        + candidate_df["快速升溫"].astype(int) * 20
-        + candidate_df["接近20日高"].astype(int) * 10
-        + candidate_df["突破20日高"].astype(int) * 20
-        + candidate_df["成交量放大"].astype(int) * 15
-        + candidate_df["多頭排列"].astype(int) * 10
-        + candidate_df["轉強訊號"].astype(int) * 10
-        + deeptrend_score.clip(lower=0) * 0.08
-        + volume_price_score.clip(lower=0) * 0.08
-        - candidate_df["高分鈍化"].astype(int) * 15
-    )
-
-    def candidate_reason(row):
-        reasons = []
-        if row.get("快速升溫"):
-            reasons.append("快速升溫")
-        elif row.get("明顯升溫"):
-            reasons.append("分數明顯上升")
-        elif row.get("分數上升"):
-            reasons.append("分數上升")
-        if row.get("突破20日高"):
-            reasons.append("突破20日高")
-        elif row.get("接近20日高"):
-            reasons.append("接近20日高")
-        if row.get("成交量放大"):
-            reasons.append("成交量放大")
-        if row.get("多頭排列"):
-            reasons.append("多頭排列")
-        if row.get("轉強訊號"):
-            reasons.append("轉強訊號")
-        if row.get("高分鈍化"):
-            reasons.append("高分但升溫放緩")
-        return "、".join(reasons) if reasons else "分數達標"
-
-    candidate_df["候選理由"] = candidate_df.apply(candidate_reason, axis=1)
-    if "資產類型" in candidate_df.columns:
-        candidate_df = candidate_df[candidate_df["資產類型"].ne("ETF")].copy()
-    candidate_df = candidate_df[candidate_df["分數達標"]].copy()
-    candidate_df = candidate_df.sort_values(
-        ["候選分數", "DeepTrend分數"],
-        ascending=[False, False],
-    ).head(limit)
+    candidate_df = build_deeptrend_candidate_df(universe_df, limit=limit)
 
     display_cols = [
         "股票代號",
@@ -5377,6 +5412,8 @@ if keyword:
         | filtered_df["股票代號"].astype(str).str.contains(keyword, case=False, na=False)
     ]
 
+diagnosis_df = add_market_candidates_to_stock_df(df, limit=3)
+
 view_options = [
     "📊 股票雷達",
     "📋 股票診斷書",
@@ -5398,7 +5435,7 @@ active_view = st.radio(
 if active_view == "📊 股票雷達":
     render_stock_radar(filtered_df)
 elif active_view == "📋 股票診斷書":
-    render_stock_diagnosis(df)
+    render_stock_diagnosis(diagnosis_df)
 elif active_view == "🩺 資料健康檢查":
     render_data_health(df)
 elif active_view == "🌡️ 觀察池溫度":
