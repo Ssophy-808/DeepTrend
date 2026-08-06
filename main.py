@@ -16,6 +16,19 @@ RESULT_FILE = OUTPUT_DIR / "stock_analysis_result.xlsx"
 UNIVERSE_RESULT_FILE = OUTPUT_DIR / "universe_analysis_result.xlsx"
 HISTORY_FILE = OUTPUT_DIR / "stock_analysis_history.csv"
 MIN_RESULT_SUCCESS_RATIO = 0.8
+AUTO_ADD_MIN_DEEPTREND_SCORE = 60
+AUTO_ADD_MIN_CANDIDATE_SCORE = 70
+AUTO_ADD_CANDIDATE_LIMIT = 3
+
+COL_STOCK_CODE = "\u80a1\u7968\u4ee3\u865f"
+COL_STOCK_NAME = "\u80a1\u7968\u540d\u7a31"
+COL_ASSET_TYPE = "\u8cc7\u7522\u985e\u578b"
+COL_DEEPTREND_SCORE = "DeepTrend\u5206\u6578"
+COL_SCORE_CHANGE = "\u5206\u6578\u8b8a\u5316"
+COL_STATUS = "\u72c0\u614b"
+COL_JUDGEMENT = "\u7d9c\u5408\u5224\u65b7"
+COL_TECHNICAL = "\u6280\u8853\u9762"
+COL_CHIP = "\u7c4c\u78bc\u9762"
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -23,6 +36,100 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def stock_code_key(value):
     return str(value).strip().split(".")[0]
+
+
+def text_contains_any(series, words):
+    flags = pd.Series(False, index=series.index)
+    for word in words:
+        flags = flags | series.str.contains(word, regex=False, na=False)
+    return flags
+
+
+def build_candidate_scores(universe_df):
+    candidate_df = universe_df.copy()
+
+    for column in [COL_DEEPTREND_SCORE, COL_SCORE_CHANGE]:
+        if column in candidate_df.columns:
+            candidate_df[column] = pd.to_numeric(candidate_df[column], errors="coerce").fillna(0)
+        else:
+            candidate_df[column] = 0
+
+    text_source = pd.Series("", index=candidate_df.index)
+    for column in [COL_STATUS, COL_JUDGEMENT, COL_TECHNICAL, COL_CHIP]:
+        if column in candidate_df.columns:
+            text_source = text_source + candidate_df[column].fillna("").astype(str)
+
+    deeptrend_score = candidate_df[COL_DEEPTREND_SCORE]
+    score_change = candidate_df[COL_SCORE_CHANGE]
+
+    candidate_df["candidate_score"] = (
+        deeptrend_score.ge(40).astype(int) * 20
+        + score_change.gt(0).astype(int) * 20
+        + score_change.ge(10).astype(int) * 15
+        + score_change.ge(20).astype(int) * 20
+        + text_contains_any(text_source, ["\u63a5\u8fd120\u65e5\u9ad8"]).astype(int) * 10
+        + text_contains_any(text_source, ["\u7a81\u783420\u65e5\u9ad8", "\u5e36\u91cf\u7a81\u783420\u65e5\u9ad8"]).astype(int) * 20
+        + text_contains_any(text_source, ["\u7206\u91cf", "\u6210\u4ea4\u91cf\u653e\u5927", "\u91cf\u80fd\u6eab\u548c\u653e\u5927", "\u91cf\u80fd"]).astype(int) * 15
+        + text_contains_any(text_source, ["\u591a\u982d\u6392\u5217"]).astype(int) * 10
+        + text_contains_any(text_source, ["\u8f49\u5f37", "\u5f37\u52e2", "\u504f\u591a"]).astype(int) * 10
+        - (deeptrend_score.ge(60) & score_change.le(2)).astype(int) * 15
+    )
+
+    return candidate_df
+
+
+def auto_add_universe_candidates_to_watchlist():
+    if not UNIVERSE_RESULT_FILE.exists() or not WATCHLIST_FILE.exists():
+        return []
+
+    try:
+        universe_df = pd.read_excel(UNIVERSE_RESULT_FILE)
+        watchlist_df = pd.read_csv(WATCHLIST_FILE)
+    except Exception as exc:
+        print(f"auto add candidates skipped: {exc}")
+        return []
+
+    required_columns = {COL_STOCK_CODE, COL_STOCK_NAME, COL_DEEPTREND_SCORE}
+    if universe_df.empty or not required_columns.issubset(universe_df.columns):
+        return []
+    if "ticker" not in watchlist_df.columns or "name" not in watchlist_df.columns:
+        return []
+
+    candidate_df = build_candidate_scores(universe_df)
+    if COL_ASSET_TYPE in candidate_df.columns:
+        candidate_df = candidate_df[candidate_df[COL_ASSET_TYPE].astype(str).str.upper().ne("ETF")].copy()
+
+    existing_codes = set(watchlist_df["ticker"].map(stock_code_key))
+    candidate_df["code_key"] = candidate_df[COL_STOCK_CODE].map(stock_code_key)
+    candidate_df = candidate_df[
+        candidate_df[COL_DEEPTREND_SCORE].ge(AUTO_ADD_MIN_DEEPTREND_SCORE)
+        & candidate_df["candidate_score"].ge(AUTO_ADD_MIN_CANDIDATE_SCORE)
+        & ~candidate_df["code_key"].isin(existing_codes)
+    ].copy()
+
+    if candidate_df.empty:
+        return []
+
+    candidate_df = candidate_df.sort_values(
+        ["candidate_score", COL_DEEPTREND_SCORE],
+        ascending=[False, False],
+    ).head(AUTO_ADD_CANDIDATE_LIMIT)
+
+    additions = pd.DataFrame(
+        {
+            "ticker": candidate_df[COL_STOCK_CODE].astype(str),
+            "name": candidate_df[COL_STOCK_NAME].astype(str),
+            "asset_type": "stock",
+        }
+    )
+
+    updated_df = pd.concat([watchlist_df, additions], ignore_index=True)
+    updated_df = updated_df.drop_duplicates(subset=["ticker"], keep="first")
+    updated_df.to_csv(WATCHLIST_FILE, index=False, encoding="utf-8-sig")
+
+    added_names = additions.apply(lambda row: f"{row['ticker']} {row['name']}", axis=1).tolist()
+    print(f"auto added candidates to watchlist: {', '.join(added_names)}")
+    return added_names
 
 
 def to_float(value):
@@ -566,13 +673,14 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
 
 
 def main():
-    analyze_stock_list(WATCHLIST_FILE, RESULT_FILE, "watchlist", use_previous_scores=True)
-
     if UNIVERSE_FILE.exists():
         try:
             analyze_stock_list(UNIVERSE_FILE, UNIVERSE_RESULT_FILE, "universe", use_previous_scores=False)
         except Exception as exc:
             print(f"universe 分析失敗，保留上一份市場池結果：{exc}")
+
+    auto_add_universe_candidates_to_watchlist()
+    analyze_stock_list(WATCHLIST_FILE, RESULT_FILE, "watchlist", use_previous_scores=True)
 
 
 if __name__ == "__main__":
