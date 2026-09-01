@@ -1936,7 +1936,25 @@ def load_score_history_data():
     history_df["股票代號"] = history_df["股票代號"].astype(str).str.strip()
     history_df["stock_code"] = history_df["股票代號"].str.split(".").str[0]
 
-    score_columns = ["收盤價", "DeepTrend分數", "技術面分數", "籌碼分數", "量價分數", "技術分數", "分數變化", "分數變化率"]
+    score_columns = [
+        "收盤價",
+        "5日線",
+        "10日線",
+        "20日線",
+        "20日高點",
+        "20日低點",
+        "成交量",
+        "5日均量",
+        "DeepTrend分數",
+        "技術面分數",
+        "籌碼分數",
+        "量價分數",
+        "技術分數",
+        "分數變化",
+        "分數變化率",
+        "Entry Score",
+        "進場觀察分數",
+    ]
     for col in score_columns:
         if col in history_df.columns:
             history_df[col] = pd.to_numeric(history_df[col], errors="coerce")
@@ -2423,6 +2441,109 @@ def build_score_interval_validation(history_df, event_mode=False):
             {
                 "區間": label,
                 **summary,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+ENTRY_SCORE_BUCKETS = [
+    ("Entry < 30", None, 30),
+    ("30 <= Entry < 45", 30, 45),
+    ("45 <= Entry < 60", 45, 60),
+    ("60 <= Entry < 75", 60, 75),
+    ("Entry >= 75", 75, None),
+]
+
+
+def entry_bucket_label(score):
+    """Assign one Entry Score to the configured entry-position bucket."""
+    if pd.isna(score):
+        return pd.NA
+    for label, lower, upper in ENTRY_SCORE_BUCKETS:
+        if lower is None and score < upper:
+            return label
+        if upper is None and score >= lower:
+            return label
+        if lower is not None and upper is not None and lower <= score < upper:
+            return label
+    return pd.NA
+
+
+def prepare_entry_score_backtest_rows(stock_code):
+    """Build per-stock Entry Score event rows from saved snapshots only."""
+    history_df = load_score_history_data()
+    selected_df = prepare_single_stock_score_history(history_df, stock_code)
+    if selected_df.empty:
+        return pd.DataFrame()
+
+    selected_df = add_entry_score_columns(selected_df)
+    selected_df = selected_df.sort_values("snapshot_date").drop_duplicates(subset=["snapshot_date"], keep="last")
+    selected_df = selected_df.reset_index(drop=True)
+    selected_df["Entry Score"] = pd.to_numeric(selected_df.get("Entry Score"), errors="coerce")
+    selected_df["DeepTrend分數"] = pd.to_numeric(selected_df.get("DeepTrend分數"), errors="coerce")
+    selected_df["收盤價"] = pd.to_numeric(selected_df.get("收盤價"), errors="coerce")
+    selected_df = selected_df.dropna(subset=["snapshot_date", "收盤價", "Entry Score"])
+    if selected_df.empty:
+        return pd.DataFrame()
+
+    for horizon in [1, 3, 5, 10, 20]:
+        future_close = selected_df["收盤價"].shift(-horizon)
+        selected_df[f"{horizon}日後報酬率"] = (future_close - selected_df["收盤價"]) / selected_df["收盤價"] * 100
+
+    selected_df["Entry區間"] = selected_df["Entry Score"].map(entry_bucket_label)
+    selected_df = selected_df.dropna(subset=["Entry區間"])
+    if selected_df.empty:
+        return pd.DataFrame()
+
+    previous_bucket = selected_df["Entry區間"].shift(1)
+    event_df = selected_df[selected_df["Entry區間"].ne(previous_bucket)].copy()
+    event_df["事件類型"] = "區間進入"
+    return event_df
+
+
+def summarize_entry_score_events(event_df):
+    """Summarize Entry Score event outcomes by bucket."""
+    if event_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for label, _, _ in ENTRY_SCORE_BUCKETS:
+        bucket_df = event_df[event_df["Entry區間"].eq(label)].copy()
+        row = {"Entry區間": label, "事件數": len(bucket_df), "樣本可信度": confidence_by_sample(len(bucket_df))}
+        for horizon in [1, 3, 5, 10, 20]:
+            col = f"{horizon}日後報酬率"
+            returns = pd.to_numeric(bucket_df.get(col, pd.Series(dtype=float)), errors="coerce").dropna()
+            row[f"{horizon}日樣本"] = len(returns)
+            row[f"{horizon}日平均報酬"] = returns.mean() if not returns.empty else pd.NA
+            row[f"{horizon}日上漲率"] = returns.gt(0).mean() * 100 if not returns.empty else pd.NA
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def summarize_entry_score_groups(event_df):
+    """Compare the key hypotheses for DT and Entry Score combinations."""
+    if event_df.empty:
+        return pd.DataFrame()
+
+    checks = [
+        ("DT >= 60 且 Entry >= 75", event_df["DeepTrend分數"].ge(60) & event_df["Entry Score"].ge(75)),
+        ("DT >= 60 且 Entry < 45", event_df["DeepTrend分數"].ge(60) & event_df["Entry Score"].lt(45)),
+        ("40 <= DT < 60 且 Entry >= 75", event_df["DeepTrend分數"].ge(40) & event_df["DeepTrend分數"].lt(60) & event_df["Entry Score"].ge(75)),
+    ]
+    rows = []
+    for group_name, mask in checks:
+        group_df = event_df[mask].copy()
+        returns_5d = pd.to_numeric(group_df.get("5日後報酬率", pd.Series(dtype=float)), errors="coerce").dropna()
+        returns_10d = pd.to_numeric(group_df.get("10日後報酬率", pd.Series(dtype=float)), errors="coerce").dropna()
+        rows.append(
+            {
+                "情境": group_name,
+                "事件數": len(group_df),
+                "5日平均報酬": returns_5d.mean() if not returns_5d.empty else pd.NA,
+                "5日上漲率": returns_5d.gt(0).mean() * 100 if not returns_5d.empty else pd.NA,
+                "10日平均報酬": returns_10d.mean() if not returns_10d.empty else pd.NA,
+                "10日上漲率": returns_10d.gt(0).mean() * 100 if not returns_10d.empty else pd.NA,
+                "樣本可信度": confidence_by_sample(len(group_df)),
             }
         )
     return pd.DataFrame(rows)
@@ -3744,6 +3865,83 @@ def render_diagnosis_overview(selected_row, selected_stock):
             st.write(f"\u9810\u8b66\u6a23\u672c\uff1a{warning_note}")
 
 
+def render_entry_score_backtest(selected_stock):
+    """Render per-stock Entry Score event validation inside the diagnosis workspace."""
+    st.subheader("Entry Score 回測")
+    st.caption("用這檔股票自己的歷史快照，觀察 Entry Score 進入不同區間後的後續表現。")
+    st.info("採事件模式：同一檔股票連續待在同一個 Entry 區間，只計算第一次進入。")
+
+    event_df = prepare_entry_score_backtest_rows(selected_stock)
+    if event_df.empty:
+        st.warning("這檔股票目前 Entry Score 歷史樣本不足，暫時無法回測。")
+        return
+
+    summary_df = summarize_entry_score_events(event_df)
+    group_df = summarize_entry_score_groups(event_df)
+    latest_event = event_df.iloc[-1]
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("最近事件 Entry", format_number(latest_event.get("Entry Score"), 1), latest_event.get("進場判讀", ""))
+    metric_cols[1].metric("最近事件區間", latest_event.get("Entry區間", "資料不足"))
+    metric_cols[2].metric("歷史事件", len(event_df))
+    metric_cols[3].metric("樣本可信度", confidence_by_sample(len(event_df)))
+
+    display_df = summary_df[
+        [
+            "Entry區間",
+            "事件數",
+            "3日樣本",
+            "3日平均報酬",
+            "3日上漲率",
+            "5日樣本",
+            "5日平均報酬",
+            "5日上漲率",
+            "10日樣本",
+            "10日平均報酬",
+            "10日上漲率",
+            "樣本可信度",
+        ]
+    ].copy()
+    for col in ["3日平均報酬", "5日平均報酬", "10日平均報酬"]:
+        display_df[col] = display_df[col].map(lambda value: format_signed_pct(value) if pd.notna(value) else "N/A")
+    for col in ["3日上漲率", "5日上漲率", "10日上漲率"]:
+        display_df[col] = display_df[col].map(lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "N/A")
+    st.markdown("### Entry 區間表現")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    if not group_df.empty:
+        group_display = group_df.copy()
+        for col in ["5日平均報酬", "10日平均報酬"]:
+            group_display[col] = group_display[col].map(lambda value: format_signed_pct(value) if pd.notna(value) else "N/A")
+        for col in ["5日上漲率", "10日上漲率"]:
+            group_display[col] = group_display[col].map(lambda value: f"{format_number(value, 1)}%" if pd.notna(value) else "N/A")
+        st.markdown("### 主要情境比較")
+        st.dataframe(group_display, use_container_width=True, hide_index=True)
+
+    recent_cols = [
+        "snapshot_date",
+        "Entry區間",
+        "Entry Score",
+        "DeepTrend分數",
+        "分數變化",
+        "進場判讀",
+        "3日後報酬率",
+        "5日後報酬率",
+        "10日後報酬率",
+    ]
+    with st.expander("查看 Entry 事件明細"):
+        recent_events = event_df[[col for col in recent_cols if col in event_df.columns]].tail(30).copy()
+        if "snapshot_date" in recent_events.columns:
+            recent_events["snapshot_date"] = recent_events["snapshot_date"].dt.strftime("%Y-%m-%d")
+        for col in ["Entry Score", "DeepTrend分數", "分數變化"]:
+            if col in recent_events.columns:
+                recent_events[col] = recent_events[col].map(lambda value: "" if pd.isna(value) else format_number(value, 1))
+        for col in ["3日後報酬率", "5日後報酬率", "10日後報酬率"]:
+            if col in recent_events.columns:
+                recent_events[col] = recent_events[col].map(lambda value: format_signed_pct(value) if pd.notna(value) else "累積中")
+        st.dataframe(recent_events, use_container_width=True, hide_index=True)
+
+
 def render_stock_diagnosis(stock_df):
     """Integrate existing single-stock pages into one stock diagnosis workspace."""
     st.subheader("\U0001f4cb \u80a1\u7968\u8a3a\u65b7\u66f8")
@@ -3762,7 +3960,7 @@ def render_stock_diagnosis(stock_df):
     st.session_state["detail_stock"] = selected_stock
     selected_df = stock_df[stock_df["\u80a1\u7968\u4ee3\u865f"].astype(str).eq(str(selected_stock))].copy()
     selected_row = selected_df.iloc[0]
-    overview_tab, kline_tab, score_tab, factor_tab, chip_tab, data_tab = st.tabs(["\u7e3d\u89bd\u8a3a\u65b7", "K\u7dda\u5716", "\u5206\u6578\u6b77\u53f2", "\u56e0\u5b50\u5206\u6790", "\u7c4c\u78bc\u67e5\u5e33", "\u5b8c\u6574\u8cc7\u6599"])
+    overview_tab, kline_tab, score_tab, factor_tab, chip_tab, entry_tab, data_tab = st.tabs(["\u7e3d\u89bd\u8a3a\u65b7", "K\u7dda\u5716", "\u5206\u6578\u6b77\u53f2", "\u56e0\u5b50\u5206\u6790", "\u7c4c\u78bc\u67e5\u5e33", "Entry \u56de\u6e2c", "\u5b8c\u6574\u8cc7\u6599"])
     with overview_tab:
         render_diagnosis_overview(selected_row, selected_stock)
     with kline_tab:
@@ -3773,6 +3971,8 @@ def render_stock_diagnosis(stock_df):
         render_factor_lead_analysis(stock_df, default_stock=selected_stock)
     with chip_tab:
         render_chip_audit(stock_df, default_stock=selected_stock)
+    with entry_tab:
+        render_entry_score_backtest(selected_stock)
     with data_tab:
         st.dataframe(selected_df.copy(), use_container_width=True, hide_index=True)
 
