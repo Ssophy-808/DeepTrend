@@ -937,6 +937,8 @@ def prepare_stock_data(df):
         "量價分數",
         "分數變化",
         "分數變化率",
+        "Entry Score",
+        "進場觀察分數",
         "成交量",
         "5日均量",
     ]
@@ -955,6 +957,7 @@ def prepare_stock_data(df):
     df["乖離率"] = ((df["收盤價"] - df["5日線"]) / df["5日線"] * 100).round(2)
     df["ETF Value Score"] = calculate_etf_value_score(df)
     df["ETF布局判讀"] = df.apply(classify_etf_value_score, axis=1)
+    df = add_entry_score_columns(df)
     return add_signal_labels(df)
 
 
@@ -1009,6 +1012,138 @@ def classify_etf_value_score(row):
     if score < 70:
         return "中性"
     return "偏熱不追"
+
+
+def calculate_entry_score(row):
+    """Estimate whether a stock's current price position is suitable for further entry research."""
+    if row.get("資產類型") == "ETF":
+        return pd.NA, "", ""
+
+    close = row_number(row, "收盤價")
+    ma5 = row_number(row, "5日線")
+    ma10 = row_number(row, "10日線")
+    ma20 = row_number(row, "20日線")
+    high20 = row_number(row, "20日高點")
+    low20 = row_number(row, "20日低點")
+    volume = row_number(row, "成交量")
+    avg_volume_5 = row_number(row, "5日均量")
+    deeptrend_score = row_number(row, "DeepTrend分數")
+    score_change = row_number(row, "分數變化")
+
+    score = 0
+    reasons = []
+
+    if pd.notna(deeptrend_score) and deeptrend_score >= 60:
+        score += 20
+        reasons.append("DT趨勢已轉強")
+    elif pd.notna(deeptrend_score) and deeptrend_score >= 40:
+        score += 12
+        reasons.append("DT進入觀察區")
+    else:
+        reasons.append("DT尚未轉強")
+
+    if pd.notna(close) and pd.notna(ma5) and ma5:
+        ma5_bias = (close - ma5) / ma5 * 100
+        if close > ma5:
+            if ma5_bias <= 3:
+                score += 25
+                reasons.append("貼近5MA")
+            elif ma5_bias <= 7:
+                score += 15
+                reasons.append("5MA乖離尚可")
+            elif ma5_bias <= 12:
+                score += 5
+                reasons.append("離5MA偏遠")
+            else:
+                score -= 20
+                reasons.append("離5MA過遠")
+        else:
+            score -= 10
+            reasons.append("尚未站上5MA")
+
+    if pd.notna(ma5) and pd.notna(ma10) and pd.notna(ma20) and ma5 > ma10 > ma20:
+        score += 15
+        reasons.append("均線多頭排列")
+
+    if pd.notna(close) and pd.notna(high20) and pd.notna(low20):
+        price_range = high20 - low20
+        if price_range > 0:
+            position = (close - low20) / price_range
+            if 0.45 <= position <= 0.85:
+                score += 15
+                reasons.append("位於20日區間中上緣")
+            elif position > 0.95:
+                score -= 8
+                reasons.append("接近20日高位")
+            elif position < 0.35:
+                score += 5
+                reasons.append("位置偏低但需等轉強")
+
+    if pd.notna(volume) and pd.notna(avg_volume_5) and avg_volume_5:
+        volume_ratio = volume / avg_volume_5
+        if 1.2 <= volume_ratio <= 1.8:
+            score += 15
+            reasons.append("量能溫和放大")
+        elif 1.8 < volume_ratio <= 2.5:
+            score += 8
+            reasons.append("量能偏強")
+        elif volume_ratio > 2.5:
+            score -= 10
+            reasons.append("爆量後不追價")
+
+    if pd.notna(score_change):
+        if 0 < score_change < 10:
+            score += 8
+            reasons.append("分數剛升溫")
+        elif 10 <= score_change <= 25:
+            score += 15
+            reasons.append("分數明顯升溫")
+        elif score_change > 25:
+            score += 5
+            reasons.append("分數升溫過快")
+        elif score_change < 0:
+            score -= 10
+            reasons.append("分數轉弱")
+
+    score = round(max(0, min(100, score)), 1)
+    if score >= 75:
+        judgement = "可優先研究"
+    elif score >= 60:
+        judgement = "進場位置尚可"
+    elif score >= 45:
+        judgement = "等待拉回確認"
+    elif score >= 30:
+        judgement = "偏高或條件不足"
+    else:
+        judgement = "暫不追價"
+
+    return score, judgement, "、".join(reasons)
+
+
+def add_entry_score_columns(df):
+    """Ensure Entry Score columns exist for current and older analysis result files."""
+    if df.empty:
+        return df
+
+    work_df = df.copy()
+    if "Entry Score" not in work_df.columns:
+        work_df["Entry Score"] = pd.NA
+    if "進場觀察分數" not in work_df.columns:
+        work_df["進場觀察分數"] = pd.NA
+    if "進場判讀" not in work_df.columns:
+        work_df["進場判讀"] = ""
+    if "進場理由" not in work_df.columns:
+        work_df["進場理由"] = ""
+
+    for index, row in work_df.iterrows():
+        if pd.isna(row.get("Entry Score")) or not row.get("進場判讀"):
+            entry_score, entry_judgement, entry_reasons = calculate_entry_score(row)
+            work_df.at[index, "Entry Score"] = entry_score
+            work_df.at[index, "進場觀察分數"] = entry_score
+            work_df.at[index, "進場判讀"] = entry_judgement
+            work_df.at[index, "進場理由"] = entry_reasons
+
+    return work_df
 
 
 def apply_realtime_prices(df):
@@ -1182,12 +1317,15 @@ def calculate_radar_priority(row):
     """Score radar cards by fresh opportunity, not just absolute score."""
     asset_type = row.get("資產類型", "個股")
     trend_score = pd.to_numeric(row.get("Trend Score", row.get("DeepTrend分數", row.get("技術分數"))), errors="coerce")
+    entry_score = pd.to_numeric(row.get("Entry Score", row.get("進場觀察分數", pd.NA)), errors="coerce")
     score_change = pd.to_numeric(row.get("分數變化", 0), errors="coerce")
     volume_ratio = pd.to_numeric(row.get("量比", pd.NA), errors="coerce")
     score = 0
 
+    if asset_type != "ETF" and pd.notna(entry_score):
+        score += min(max(entry_score, 0), 100) * 0.55
     if pd.notna(trend_score):
-        score += min(max(trend_score, 0), 100) * 0.35
+        score += min(max(trend_score, 0), 100) * 0.20
         if asset_type != "ETF" and trend_score >= 40:
             score += 12
     if pd.notna(score_change):
@@ -1320,7 +1458,10 @@ def add_market_candidates_to_stock_df(stock_df, limit=3):
     combined_df = stock_df.copy()
     combined_df["雷達來源"] = "觀察池"
     exclude_codes = combined_df["股票代號"].astype(str).tolist() if "股票代號" in combined_df.columns else []
-    candidate_df = build_deeptrend_candidate_df(load_universe_result(), limit=limit, exclude_codes=exclude_codes)
+    universe_df = load_universe_result()
+    if not universe_df.empty:
+        universe_df = prepare_stock_data(universe_df)
+    candidate_df = build_deeptrend_candidate_df(universe_df, limit=limit, exclude_codes=exclude_codes)
     if candidate_df.empty:
         return combined_df
 
@@ -1349,6 +1490,7 @@ def render_stock_radar(filtered_df):
     sort_options = {
         "DT Score 高到低": (["Trend Score", "分數變化"], [False, False]),
         "DT 研究順序": (["雷達推薦分數", "Trend Score"], [False, False]),
+        "Entry Score 高到低": (["Entry Score", "Trend Score"], [False, False]),
         "技術分數高到低": (["技術分數", "乖離率"], [False, False]),
         "今日漲跌幅高到低": (["今日漲跌幅", "技術分數"], [False, False]),
         "乖離率高到低": (["乖離率", "技術分數"], [False, False]),
@@ -1367,14 +1509,23 @@ def render_stock_radar(filtered_df):
         score_change = pd.to_numeric(row.get("分數變化", pd.NA), errors="coerce")
         change_color = value_color(score_change)
         score_change_text = format_signed_number(score_change, 1) if pd.notna(score_change) else "資料不足"
+        entry_score = pd.to_numeric(row.get("Entry Score", row.get("進場觀察分數", pd.NA)), errors="coerce")
+        entry_judgement = row.get("進場判讀", "")
         etf_value_score = row.get("ETF Value Score", pd.NA)
         etf_judgement = row.get("ETF布局判讀", "")
         source_badge = "⭐ 潛力股" if source_label == "市場池潛力股" else ""
-        etf_block = '<div style="height:42px;margin-top:12px;"></div>'
+        bottom_block = '<div style="height:42px;margin-top:12px;"></div>'
         if asset_type == "ETF":
-            etf_block = f"""
+            bottom_block = f"""
                 <div style="height:42px;margin-top:12px;padding:9px 10px;border-radius:8px;background:#0f172a;color:#d1d5db;font-size:13px;box-sizing:border-box;overflow:hidden;">
                     ETF Value Score：<b style="color:#38bdf8;">{format_number(etf_value_score, 1)}</b>｜{etf_judgement}
+                </div>
+            """
+        elif pd.notna(entry_score):
+            entry_color = "#22c55e" if entry_score >= 60 else "#facc15" if entry_score >= 45 else "#9ca3af"
+            bottom_block = f"""
+                <div style="height:42px;margin-top:12px;padding:9px 10px;border-radius:8px;background:#0f172a;color:#d1d5db;font-size:13px;box-sizing:border-box;overflow:hidden;">
+                    Entry Score：<b style="color:{entry_color};">{format_number(entry_score, 1)}</b>｜{entry_judgement}
                 </div>
             """
 
@@ -1408,7 +1559,7 @@ def render_stock_radar(filtered_df):
                         <div style="font-size:30px;font-weight:900;color:{change_color};line-height:1.1;">{score_change_text}</div>
                     </div>
                 </div>
-                {etf_block}
+                {bottom_block}
             </div>
             """
         ).replace("\n", "")
@@ -3434,6 +3585,9 @@ def render_diagnosis_overview(selected_row, selected_stock):
     is_etf = asset_type == "ETF"
     etf_value_score = selected_row.get("ETF Value Score", pd.NA)
     etf_reading = selected_row.get("ETF\u5e03\u5c40\u5224\u8b80", "\u8cc7\u6599\u4e0d\u8db3")
+    entry_score = pd.to_numeric(selected_row.get("Entry Score", selected_row.get("\u9032\u5834\u89c0\u5bdf\u5206\u6578", pd.NA)), errors="coerce")
+    entry_reading = selected_row.get("\u9032\u5834\u5224\u8b80", "\u8cc7\u6599\u4e0d\u8db3")
+    entry_reasons = str(selected_row.get("\u9032\u5834\u7406\u7531", "") or "")
     if pd.notna(score) and score >= 80:
         headline = "\u5f37\u52e2\u4f46\u7559\u610f\u904e\u71b1"
     elif pd.notna(score) and score >= 60:
@@ -3459,7 +3613,7 @@ def render_diagnosis_overview(selected_row, selected_stock):
     if is_etf:
         st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5cETF\u5206\u6279\u5e03\u5c40\uff1a{etf_reading}\uff5cTrend Score\uff1a{format_number(score, 1)}")
     else:
-        st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5c{bucket_label}\uff08{bucket_reading}\uff09\uff5c{diagnosis}")
+        st.info(f"\u76ee\u524d\u8a3a\u65b7\uff1a{headline}\uff5cEntry Score\uff1a{format_number(entry_score, 1)}\uff08{entry_reading}\uff09\uff5c{diagnosis}")
     if history_stats:
         current_streak = history_stats.get("current_streak", 0)
         median_stay = history_stats.get("median_stay", pd.NA)
@@ -3510,7 +3664,7 @@ def render_diagnosis_overview(selected_row, selected_stock):
     if is_etf:
         summary_cols[1].metric("ETF \u5206\u6279\u5e03\u5c40", format_number(etf_value_score, 1), etf_reading)
     else:
-        summary_cols[1].metric("\u9032\u5834\u5340\u9593", bucket_label, bucket_reading)
+        summary_cols[1].metric("Entry Score", format_number(entry_score, 1), entry_reading)
     with summary_cols[2]:
         st.markdown(
             f"""
@@ -3559,6 +3713,7 @@ def render_diagnosis_overview(selected_row, selected_stock):
                     else
                     f"\u2022 DT \u4f4d\u65bc {bucket_label}<br>"
                     f"\u2022 \u5c6c\u65bc{entry_direction}<br>"
+                    f"\u2022 \u9032\u5834\u89c0\u5bdf\uff1a{entry_reading}<br>"
                     f"\u2022 {life_reading}<br>"
                     f"\u2022 {impact_label}\u4ecd\u70ba\u4e3b\u8981\u652f\u6490"
                 }
@@ -3576,6 +3731,11 @@ def render_diagnosis_overview(selected_row, selected_stock):
             st.write(f"\u6b77\u53f2\u4e2d\u4f4d\u6578\uff1a{median_text}")
             st.write(f"\u6b77\u53f2\u6700\u9577\uff1a{max_text}")
             st.write(f"\u9032\u5165\u65b9\u5411\uff1a{entry_direction}")
+            if not is_etf:
+                st.write(f"Entry Score\uff1a{format_number(entry_score, 1)}")
+                st.write(f"\u9032\u5834\u89c0\u5bdf\uff1a{entry_reading}")
+                if entry_reasons:
+                    st.write(f"\u9032\u5834\u7406\u7531\uff1a{entry_reasons}")
         with detail_cols[1]:
             st.markdown("**\u5f71\u97ff\u8207\u9810\u8b66**")
             st.write(f"\u4e3b\u8981\u5206\u6578\u5f71\u97ff\uff1a{impact_label} {impact_value}")

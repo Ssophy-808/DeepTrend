@@ -483,6 +483,94 @@ def classify_score(score):
     return "❌避開", "觀望"
 
 
+def score_entry_position(close, ma5, ma10, ma20, volume, avg_volume_5, recent_high, recent_low, deeptrend_score, score_change):
+    score = 0
+    reasons = []
+
+    if deeptrend_score >= 60:
+        score += 20
+        reasons.append("DT趨勢已轉強")
+    elif deeptrend_score >= 40:
+        score += 12
+        reasons.append("DT進入觀察區")
+    else:
+        reasons.append("DT尚未轉強")
+
+    if ma5 and close > ma5:
+        ma5_bias = (close - ma5) / ma5 * 100
+        if ma5_bias <= 3:
+            score += 25
+            reasons.append("貼近5MA")
+        elif ma5_bias <= 7:
+            score += 15
+            reasons.append("5MA乖離尚可")
+        elif ma5_bias <= 12:
+            score += 5
+            reasons.append("離5MA偏遠")
+        else:
+            score -= 20
+            reasons.append("離5MA過遠")
+    else:
+        score -= 10
+        reasons.append("尚未站上5MA")
+
+    if ma5 and ma10 and ma20 and ma5 > ma10 > ma20:
+        score += 15
+        reasons.append("均線多頭排列")
+
+    price_range = recent_high - recent_low
+    if price_range > 0:
+        position = (close - recent_low) / price_range
+        if 0.45 <= position <= 0.85:
+            score += 15
+            reasons.append("位於20日區間中上緣")
+        elif position > 0.95:
+            score -= 8
+            reasons.append("接近20日高位")
+        elif position < 0.35:
+            score += 5
+            reasons.append("位置偏低但需等轉強")
+
+    volume_ratio = volume / avg_volume_5 if avg_volume_5 else 0
+    if 1.2 <= volume_ratio <= 1.8:
+        score += 15
+        reasons.append("量能溫和放大")
+    elif 1.8 < volume_ratio <= 2.5:
+        score += 8
+        reasons.append("量能偏強")
+    elif volume_ratio > 2.5:
+        score -= 10
+        reasons.append("爆量後不追價")
+
+    if score_change is not None and not pd.isna(score_change):
+        if 0 < score_change < 10:
+            score += 8
+            reasons.append("分數剛升溫")
+        elif 10 <= score_change <= 25:
+            score += 15
+            reasons.append("分數明顯升溫")
+        elif score_change > 25:
+            score += 5
+            reasons.append("分數升溫過快")
+        elif score_change < 0:
+            score -= 10
+            reasons.append("分數轉弱")
+
+    score = round(max(0, min(100, score)), 1)
+    if score >= 75:
+        judgement = "可優先研究"
+    elif score >= 60:
+        judgement = "進場位置尚可"
+    elif score >= 45:
+        judgement = "等待拉回確認"
+    elif score >= 30:
+        judgement = "偏高或條件不足"
+    else:
+        judgement = "暫不追價"
+
+    return score, judgement, "、".join(reasons)
+
+
 def infer_asset_type(row, ticker):
     value = str(row.get("asset_type", "")).strip().lower()
     if value in {"etf", "stock"}:
@@ -604,6 +692,18 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
         score = round(score, 2)
         previous_score = previous_scores.get(stock_code_key(ticker))
         score_change, score_change_rate = calculate_score_change(score, previous_score)
+        entry_score, entry_judgement, entry_reasons = score_entry_position(
+            close,
+            ma5,
+            ma10,
+            ma20,
+            volume,
+            avg_volume_5,
+            recent_high,
+            recent_low,
+            score,
+            score_change,
+        )
         technical_reasons = technical_reasons + [
             signal for signal in volume_price_signals if signal != "無明顯異常"
         ]
@@ -647,6 +747,10 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
                 "前次分數": previous_score,
                 "分數變化": score_change,
                 "分數變化率": score_change_rate,
+                "Entry Score": entry_score,
+                "進場觀察分數": entry_score,
+                "進場判讀": entry_judgement,
+                "進場理由": entry_reasons,
                 "狀態": status,
                 "綜合判斷": judgement,
                 "技術面": "、".join(technical_reasons),
