@@ -583,6 +583,77 @@ def infer_asset_type(row, ticker):
     return "個股"
 
 
+def load_previous_analysis_rows(output_file):
+    fallback_frames = []
+
+    if output_file.exists():
+        try:
+            previous_df = pd.read_excel(output_file)
+            if not previous_df.empty:
+                fallback_frames.append(previous_df)
+        except Exception as exc:
+            print(f"讀取上一份分析結果失敗，略過 fallback：{exc}")
+
+    if HISTORY_FILE.exists():
+        try:
+            history_df = pd.read_csv(HISTORY_FILE)
+            if not history_df.empty and "股票代號" in history_df.columns:
+                history_df = history_df.copy()
+                if "snapshot_date" in history_df.columns:
+                    history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+                    history_df = history_df.sort_values("snapshot_date")
+                drop_cols = [col for col in ["snapshot_date", "snapshot_time", "source_file"] if col in history_df.columns]
+                history_df = history_df.drop(columns=drop_cols)
+                fallback_frames.append(history_df)
+        except Exception as exc:
+            print(f"讀取歷史快照失敗，略過 fallback：{exc}")
+
+    if not fallback_frames:
+        return pd.DataFrame()
+
+    fallback_df = pd.concat(fallback_frames, ignore_index=True, sort=False)
+    if fallback_df.empty or "股票代號" not in fallback_df.columns:
+        return pd.DataFrame()
+
+    fallback_df["股票代號_key"] = fallback_df["股票代號"].map(stock_code_key)
+    fallback_df = fallback_df.dropna(subset=["股票代號_key"])
+    return fallback_df.drop_duplicates(subset=["股票代號_key"], keep="last")
+
+
+def fill_missing_analysis_rows(result_df, stock_list, output_file, label):
+    if result_df.empty or "股票代號" not in result_df.columns or "ticker" not in stock_list.columns:
+        return result_df
+
+    expected_codes = stock_list["ticker"].astype(str).map(stock_code_key)
+    result_codes = set(result_df["股票代號"].map(stock_code_key))
+    missing_codes = [code for code in expected_codes if code not in result_codes]
+    if not missing_codes:
+        return result_df
+
+    fallback_df = load_previous_analysis_rows(output_file)
+    if fallback_df.empty:
+        print(f"{label} 有 {len(missing_codes)} 檔本次抓取失敗，且找不到可補上的舊資料。")
+        return result_df
+
+    fallback_rows = fallback_df[fallback_df["股票代號_key"].isin(missing_codes)].copy()
+    fallback_rows = fallback_rows.drop(columns=["股票代號_key"], errors="ignore")
+    if fallback_rows.empty:
+        print(f"{label} 有 {len(missing_codes)} 檔本次抓取失敗，歷史資料也沒有可補上的記錄。")
+        return result_df
+
+    for column in result_df.columns:
+        if column not in fallback_rows.columns:
+            fallback_rows[column] = pd.NA
+    fallback_rows = fallback_rows[result_df.columns]
+    restored_codes = fallback_rows["股票代號"].astype(str).map(stock_code_key).tolist()
+    still_missing = sorted(set(missing_codes) - set(restored_codes))
+    print(f"{label} 使用歷史資料補回 {len(restored_codes)} 檔：{', '.join(restored_codes[:20])}")
+    if still_missing:
+        print(f"{label} 仍有 {len(still_missing)} 檔沒有任何可補資料：{', '.join(still_missing[:20])}")
+
+    return pd.concat([result_df, fallback_rows], ignore_index=True, sort=False)
+
+
 def analyze_stock_list(input_file, output_file, label, use_previous_scores=True):
     stock_list = pd.read_csv(input_file)
     chip_data = pd.read_csv(CHIP_FILE)
@@ -763,6 +834,8 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
 
     if result_df.empty:
         raise RuntimeError(f"沒有產生任何 {label} 分析結果，請檢查官方資料來源或 {input_file.name}。")
+
+    result_df = fill_missing_analysis_rows(result_df, stock_list, output_file, label)
 
     min_required_rows = int(len(stock_list) * MIN_RESULT_SUCCESS_RATIO)
     if len(result_df) < min_required_rows:
