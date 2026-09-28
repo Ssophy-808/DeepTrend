@@ -508,6 +508,9 @@ def load_stock_analysis_history():
         return pd.DataFrame()
 
     history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    if "資料日期" in history_df.columns:
+        market_dates = pd.to_datetime(history_df["資料日期"], errors="coerce")
+        history_df["snapshot_date"] = market_dates.fillna(history_df["snapshot_date"])
     history_df["股票代號_key"] = history_df["股票代號"].map(stock_code_key)
     return history_df.dropna(subset=["snapshot_date", "股票代號_key"])
 
@@ -1483,6 +1486,10 @@ def render_stock_radar(filtered_df):
     caption = f"目前顯示 {len(filtered_df)} 檔觀察池股票"
     if candidate_count:
         caption += f"｜另加入市場池潛力股 {candidate_count} 檔"
+    if "資料日期" in radar_df.columns:
+        market_dates = pd.to_datetime(radar_df["資料日期"], errors="coerce").dropna()
+        if not market_dates.empty:
+            caption += f"｜最新交易資料 {market_dates.max().strftime('%Y-%m-%d')}"
     st.caption(caption)
 
     radar_df["雷達推薦分數"] = radar_df.apply(calculate_radar_priority, axis=1)
@@ -1932,6 +1939,9 @@ def load_score_history_data():
 
     history_df = history_df.copy()
     history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    if "資料日期" in history_df.columns:
+        market_dates = pd.to_datetime(history_df["資料日期"], errors="coerce")
+        history_df["snapshot_date"] = market_dates.fillna(history_df["snapshot_date"])
     history_df = history_df[history_df["snapshot_date"].notna()].copy()
     history_df["股票代號"] = history_df["股票代號"].astype(str).str.strip()
     history_df["stock_code"] = history_df["股票代號"].str.split(".").str[0]

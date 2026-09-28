@@ -299,36 +299,84 @@ def generate_ai_comment(judgement, technical_reasons, chip_reasons, score):
     return f"風險偏高：{reason_text}。目前不適合積極追蹤，等待結構改善。"
 
 
-def load_previous_scores():
+def load_previous_score_history():
     if not HISTORY_FILE.exists():
-        return {}
+        return pd.DataFrame()
 
     try:
         history_df = pd.read_csv(HISTORY_FILE)
     except Exception:
-        return {}
+        return pd.DataFrame()
 
     required_columns = {"snapshot_date", "股票代號"}
     if history_df.empty or not required_columns.issubset(history_df.columns):
-        return {}
+        return pd.DataFrame()
 
     score_column = "DeepTrend分數"
     if score_column not in history_df.columns:
-        return {}
+        return pd.DataFrame()
 
     history_df["snapshot_date"] = pd.to_datetime(history_df["snapshot_date"], errors="coerce")
+    if "資料日期" in history_df.columns:
+        market_dates = pd.to_datetime(history_df["資料日期"], errors="coerce")
+        history_df["effective_date"] = market_dates.fillna(history_df["snapshot_date"])
+    else:
+        history_df["effective_date"] = history_df["snapshot_date"]
     history_df[score_column] = pd.to_numeric(history_df[score_column], errors="coerce")
     history_df["股票代號_key"] = history_df["股票代號"].map(stock_code_key)
-    history_df = history_df.dropna(subset=["snapshot_date", score_column])
+    return history_df.dropna(subset=["effective_date", score_column])
 
-    today = pd.Timestamp(date.today())
-    previous_df = history_df[history_df["snapshot_date"] < today]
-    if previous_df.empty:
+
+def find_previous_score(history_df, ticker, current_market_date):
+    if history_df.empty or not current_market_date:
+        return None, None
+
+    market_date = pd.to_datetime(current_market_date, errors="coerce")
+    if pd.isna(market_date):
+        return None, None
+
+    stock_history = history_df[
+        history_df["股票代號_key"].eq(stock_code_key(ticker))
+        & history_df["effective_date"].lt(market_date)
+    ]
+    if stock_history.empty:
+        return None, None
+
+    latest_date = stock_history["effective_date"].max()
+    latest_rows = stock_history[stock_history["effective_date"].eq(latest_date)]
+    return latest_rows["DeepTrend分數"].iloc[-1], latest_date.date().isoformat()
+
+
+def load_previous_result_rows(output_file):
+    if not output_file.exists():
         return {}
+    try:
+        previous_df = pd.read_excel(output_file)
+    except Exception:
+        return {}
+    if previous_df.empty or "股票代號" not in previous_df.columns:
+        return {}
+    return {
+        stock_code_key(row["股票代號"]): row
+        for _, row in previous_df.iterrows()
+    }
 
-    latest_date = previous_df["snapshot_date"].max()
-    latest_df = previous_df[previous_df["snapshot_date"] == latest_date]
-    return dict(zip(latest_df["股票代號_key"], latest_df[score_column]))
+
+def find_previous_result_score(previous_rows, ticker, current_market_date):
+    previous_row = previous_rows.get(stock_code_key(ticker))
+    if previous_row is None:
+        return None, None
+
+    market_date = pd.to_datetime(current_market_date, errors="coerce")
+    saved_market_date = pd.to_datetime(previous_row.get("資料日期"), errors="coerce")
+    if pd.isna(market_date) or pd.isna(saved_market_date):
+        return None, None
+
+    if saved_market_date < market_date:
+        return previous_row.get("DeepTrend分數"), saved_market_date.date().isoformat()
+    if saved_market_date == market_date:
+        return previous_row.get("前次分數"), previous_row.get("前次資料日期")
+    return None, None
 
 
 def calculate_score_change(current_score, previous_score):
@@ -665,7 +713,8 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
             "Using the latest available trading day."
         )
 
-    previous_scores = load_previous_scores() if use_previous_scores else {}
+    previous_score_history = load_previous_score_history() if use_previous_scores else pd.DataFrame()
+    previous_result_rows = load_previous_result_rows(output_file) if not use_previous_scores else {}
     results = []
 
     for _, row in stock_list.iterrows():
@@ -690,6 +739,8 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
             continue
 
         close = float(close_series.iloc[-1])
+        market_data_date = pd.to_datetime(history["日期"].iloc[-1], errors="coerce")
+        market_data_date = "" if pd.isna(market_data_date) else market_data_date.date().isoformat()
         prev_close = float(close_series.iloc[-2])
         ma5_series = close_series.rolling(5).mean()
         ma10_series = close_series.rolling(10).mean()
@@ -761,7 +812,18 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
         )
         score = technical_score * 0.4 + chip_score * 0.4 + volume_price_score * 0.2
         score = round(score, 2)
-        previous_score = previous_scores.get(stock_code_key(ticker))
+        if use_previous_scores:
+            previous_score, previous_score_date = find_previous_score(
+                previous_score_history,
+                ticker,
+                market_data_date,
+            )
+        else:
+            previous_score, previous_score_date = find_previous_result_score(
+                previous_result_rows,
+                ticker,
+                market_data_date,
+            )
         score_change, score_change_rate = calculate_score_change(score, previous_score)
         entry_score, entry_judgement, entry_reasons = score_entry_position(
             close,
@@ -785,6 +847,8 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
                 "股票代號": ticker,
                 "股票名稱": stock_name,
                 "資產類型": asset_type,
+                "資料日期": market_data_date,
+                "籌碼資料日期": chip_latest_date or "",
                 "收盤價": round(close, 2),
                 "5日線": round(ma5, 2),
                 "10日線": round(ma10, 2),
@@ -816,6 +880,7 @@ def analyze_stock_list(input_file, output_file, label, use_previous_scores=True)
                 "籌碼分數": chip_score,
                 "量價分數": volume_price_score,
                 "前次分數": previous_score,
+                "前次資料日期": previous_score_date or "",
                 "分數變化": score_change,
                 "分數變化率": score_change_rate,
                 "Entry Score": entry_score,

@@ -77,7 +77,13 @@ def load_current_snapshot():
                 f"Need at least {min_required_rows}. History was not updated."
             )
 
-    snapshot_df.insert(0, "snapshot_date", snapshot_time.strftime("%Y-%m-%d"))
+    snapshot_date = snapshot_time.strftime("%Y-%m-%d")
+    if "資料日期" in snapshot_df.columns:
+        market_dates = pd.to_datetime(snapshot_df["資料日期"], errors="coerce").dropna()
+        if not market_dates.empty:
+            snapshot_date = market_dates.mode().iloc[0].strftime("%Y-%m-%d")
+
+    snapshot_df.insert(0, "snapshot_date", snapshot_date)
     snapshot_df.insert(1, "snapshot_time", snapshot_time.strftime("%Y-%m-%d %H:%M:%S"))
     snapshot_df.insert(2, "source_file", "output/stock_analysis_result.xlsx")
     return snapshot_df
@@ -89,11 +95,14 @@ def append_snapshot_to_history(snapshot_df):
     if HISTORY_FILE.exists():
         history_df = pd.read_csv(HISTORY_FILE)
         if not history_df.empty and "snapshot_date" in history_df.columns:
-            latest_date = history_df["snapshot_date"].max()
-            latest_df = history_df[history_df["snapshot_date"] == latest_date]
-            if snapshots_equal(latest_df, snapshot_df):
-                print(f"Snapshot unchanged from {latest_date}; history was not updated.")
+            snapshot_date = snapshot_df["snapshot_date"].iloc[0]
+            same_date_df = history_df[history_df["snapshot_date"].astype(str).eq(snapshot_date)]
+            if len(same_date_df) == len(snapshot_df) and snapshots_equal(same_date_df, snapshot_df):
+                print(f"Snapshot unchanged for trading date {snapshot_date}; history was not updated.")
                 return history_df
+            history_df = history_df[~history_df["snapshot_date"].astype(str).eq(snapshot_date)]
+            if not same_date_df.empty:
+                print(f"Replaced existing snapshot for trading date {snapshot_date}.")
         combined_df = pd.concat([history_df, snapshot_df], ignore_index=True)
     else:
         combined_df = snapshot_df
