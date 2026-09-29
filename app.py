@@ -645,30 +645,17 @@ def build_score_component_change(selected_row):
 
     history_df = load_stock_analysis_history()
     previous_row = None
+    current_market_date = pd.to_datetime(selected_row.get("資料日期"), errors="coerce")
+    previous_market_date = pd.NaT
     if not history_df.empty:
         stock_history = history_df[history_df["股票代號_key"] == today_key].sort_values("snapshot_date")
-        stock_history = stock_history[stock_history["snapshot_date"] <= pd.Timestamp(date.today())]
+        if pd.isna(current_market_date):
+            current_market_date = stock_history["snapshot_date"].max()
+        stock_history = stock_history[stock_history["snapshot_date"] < current_market_date]
+        stock_history = stock_history.drop_duplicates(subset=["snapshot_date"], keep="last")
         if not stock_history.empty:
-            compare_columns = ["收盤價"] + [column for _, column, _ in score_columns]
-            current_values = {column: row_number(selected_row, column) for column in compare_columns}
-
-            for _, candidate_row in stock_history.iloc[::-1].iterrows():
-                is_same_snapshot = True
-                for column in compare_columns:
-                    current_value = current_values[column]
-                    candidate_value = row_number(candidate_row, column)
-                    if pd.isna(current_value) and pd.isna(candidate_value):
-                        continue
-                    if pd.isna(current_value) != pd.isna(candidate_value):
-                        is_same_snapshot = False
-                        break
-                    if abs(float(current_value) - float(candidate_value)) > 0.0001:
-                        is_same_snapshot = False
-                        break
-
-                if not is_same_snapshot:
-                    previous_row = candidate_row
-                    break
+            previous_row = stock_history.iloc[-1]
+            previous_market_date = previous_row["snapshot_date"]
 
     rows = []
     for label, column, describer in score_columns:
@@ -684,7 +671,10 @@ def build_score_component_change(selected_row):
             }
         )
 
-    return pd.DataFrame(rows)
+    result_df = pd.DataFrame(rows)
+    result_df.attrs["previous_market_date"] = previous_market_date
+    result_df.attrs["current_market_date"] = current_market_date
+    return result_df
 
 
 @st.cache_data(ttl=600)
@@ -3517,9 +3507,16 @@ def render_detail(filtered_df):
 
     st.markdown("### 📈 分數組成變化")
     score_change_df = build_score_component_change(selected_row)
+    previous_market_date = score_change_df.attrs.get("previous_market_date")
+    current_market_date = score_change_df.attrs.get("current_market_date")
     st.dataframe(score_change_df, use_container_width=True, hide_index=True)
     if score_change_df["上一交易日"].eq("").all():
         st.caption("目前尚無可比較的上一個交易日快照，累積資料後會自動顯示。")
+    elif pd.notna(previous_market_date) and pd.notna(current_market_date):
+        st.caption(
+            f"比較基準：{previous_market_date.strftime('%Y-%m-%d')} → "
+            f"{current_market_date.strftime('%Y-%m-%d')}"
+        )
 
     st.markdown("### 📌 技術面")
     st.info(selected_row["技術面"])
